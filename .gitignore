@@ -5,3 +5,4 @@ dist/
 *.db-wal
 coverage/
 UNIFIED_PLAN.md
+.agents/

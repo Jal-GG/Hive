@@ -59,10 +59,42 @@ export interface Lease {
   state: 'active' | 'released' | 'expired' | 'cancelled'
 }
 
-export interface ResultEnvelope<T> {
-  version: 1
-  requestId: string
-  ok: boolean
-  data?: T
-  error?: { code: string; message: string }
+export interface ContextProvenance {
+  sourceType: 'hook' | 'session' | 'file' | 'url' | 'git' | 'user' | 'model' | 'integration'
+  sourceId: string
+  actorId?: string
+  createdAt: string
+  transformationChain: string[]
+  trust: 'observed' | 'imported' | 'derived' | 'proposed' | 'approved'
 }
+
+export interface ContextNode {
+  uri: string
+  scope: ScopeRef
+  kind: 'resource' | 'memory' | 'skill' | 'session' | 'experience' | 'page'
+  level: 'L0' | 'L1' | 'L2'
+  title: string
+  abstract?: string
+  overview?: string
+  body?: string
+  tags: string[]
+  links: string[]
+  provenance: ContextProvenance
+  expiresAt?: string
+  pinned: boolean
+  sha256: string
+  version: number
+}
+
+export interface ContextEntry {
+  uri: string
+  name: string
+  kind: 'directory' | 'file'
+  size?: number
+  updatedAt?: string
+}
+
+/** Discriminated on `ok` so a successful result narrows to a present `data`. */
+export type ResultEnvelope<T> =
+  | { version: 1; requestId: string; ok: true; data: T }
+  | { version: 1; requestId: string; ok: false; error: { code: string; message: string } }

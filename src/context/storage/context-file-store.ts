@@ -1,9 +1,14 @@
-import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { ContextEntry, ScopeRef } from '../../contracts.js'
 import { HiveError } from '../../errors.js'
 import { createId } from '../../shared/ids.js'
 import { createResourceUri, scopeSegments } from '../../scope/resource-uri.js'
+
+export interface FileInfo {
+  bytes: number
+  updatedAt: string
+}
 
 /**
  * Paths accepted by this store are already canonical — `ContextFilesystem`
@@ -43,12 +48,43 @@ export class ContextFileStore {
     return readFileSync(fileName, 'utf8')
   }
 
+  exists(scope: ScopeRef, path: string): boolean {
+    return statSync(this.fileName(scope, path), { throwIfNoEntry: false })?.isFile() === true
+  }
+
+  stat(scope: ScopeRef, path: string): FileInfo | undefined {
+    const info = statSync(this.fileName(scope, path), { throwIfNoEntry: false })
+    if (!info?.isFile()) return undefined
+    return { bytes: info.size, updatedAt: info.mtime.toISOString() }
+  }
+
+  /**
+   * Writes through a temporary file in the destination directory, flushing it to
+   * disk before the rename so a crash leaves either the old file or the new one
+   * — never a half-written document. (The parent directory entry itself is not
+   * flushed: Windows offers no portable directory fsync.)
+   */
   write(scope: ScopeRef, path: string, text: string): void {
     const fileName = this.fileName(scope, path)
     this.ensureDirectory(dirname(fileName))
     const temporaryName = `${fileName}.${createId()}.tmp`
-    writeFileSync(temporaryName, text, 'utf8')
+    const descriptor = openSync(temporaryName, 'w')
+    try {
+      writeSync(descriptor, text, null, 'utf8')
+      fsyncSync(descriptor)
+    } finally {
+      closeSync(descriptor)
+    }
     renameSync(temporaryName, fileName)
+  }
+
+  rename(scope: ScopeRef, fromPath: string, toPath: string): void {
+    const source = this.fileName(scope, fromPath)
+    if (!statSync(source, { throwIfNoEntry: false })?.isFile()) throw new HiveError('NOT_FOUND', 'Context file does not exist')
+    const destination = this.fileName(scope, toPath)
+    if (statSync(destination, { throwIfNoEntry: false })) throw new HiveError('ALREADY_EXISTS', 'Rename destination already exists')
+    this.ensureDirectory(dirname(destination))
+    renameSync(source, destination)
   }
 
   remove(scope: ScopeRef, path: string): void {
@@ -64,7 +100,7 @@ export class ContextFileStore {
     if (!info) throw new HiveError('NOT_FOUND', 'Context directory does not exist')
     if (!info.isDirectory()) throw new HiveError('NOT_DIRECTORY', 'Context URI is not a directory')
     return readdirSync(directoryName, { withFileTypes: true })
-      .filter((entry) => entry.name !== '.git')
+      .filter((entry) => entry.name !== '.git' && !entry.name.endsWith('.tmp'))
       .sort((left, right) => left.name.localeCompare(right.name))
       .map((entry) => {
         const file = statSync(join(directoryName, entry.name))
@@ -78,18 +114,21 @@ export class ContextFileStore {
       })
   }
 
-  markdownFiles(scope: ScopeRef): string[] {
-    const root = this.directoryName(scope)
+  /** Every Markdown document under the scope, as sorted canonical paths. */
+  markdownFiles(scope: ScopeRef, path?: string): string[] {
+    const scopeRoot = this.directoryName(scope)
+    const start = this.directoryName(scope, path)
+    if (!statSync(start, { throwIfNoEntry: false })) return []
     const paths: string[] = []
     const visit = (directoryName: string) => {
       for (const entry of readdirSync(directoryName, { withFileTypes: true })) {
+        if (entry.name === '.git') continue
         const fullName = join(directoryName, entry.name)
         if (entry.isDirectory()) visit(fullName)
-        else if (entry.name.endsWith('.md')) paths.push(relative(root, fullName).split(sep).join('/'))
+        else if (entry.name.endsWith('.md')) paths.push(relative(scopeRoot, fullName).split(sep).join('/'))
       }
     }
-    if (!statSync(root, { throwIfNoEntry: false })) return []
-    visit(root)
+    visit(start)
     return paths.sort()
   }
 
@@ -100,7 +139,7 @@ export class ContextFileStore {
   }
 
   private directoryName(scope: ScopeRef, path?: string): string {
-    return join(this.root, ...scopeSegments(scope), ...(path ? [path] : []))
+    return join(this.root, ...scopeSegments(scope), ...(path ? path.split('/') : []))
   }
 
   private fileName(scope: ScopeRef, path: string): string {

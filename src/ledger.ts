@@ -1,5 +1,17 @@
 import Database from 'better-sqlite3'
-import { ActorContext, ContextNode, EventEnvelope, Lease, ScopeRef } from './contracts.js'
+import {
+  ActorContext,
+  ContextIndexEntry,
+  ContextKind,
+  ContextLevel,
+  ContextLinkRef,
+  ContextNode,
+  ContextSnapshotManifest,
+  ContextTombstone,
+  EventEnvelope,
+  Lease,
+  ScopeRef,
+} from './contracts.js'
 import { HiveError } from './errors.js'
 import { SqliteDatabase } from './infrastructure/sqlite/sqlite-database.js'
 import { createId } from './shared/ids.js'
@@ -8,6 +20,16 @@ import { assertCapability } from './identity/capabilities.js'
 import { validateScopeName } from './scope/resource-uri.js'
 
 export type LedgerOptions = ClockOptions
+
+const INDEX_COLUMNS = 'SELECT uri, kind, level, title, sha256, version, updated_at FROM context_nodes'
+
+/** Tombstones store scope ids; names are joined back so callers get a complete `ScopeRef`. */
+const TOMBSTONE_COLUMNS = `SELECT t.uri, t.path, t.version, t.sha256, t.deleted_at, t.deleted_by, t.commit_hash,
+    t.workspace_id, t.project_id, w.name AS workspace_name, p.name AS project_name
+  FROM context_tombstones t
+  JOIN workspaces w ON w.id = t.workspace_id
+  JOIN projects p ON p.id = t.project_id
+  WHERE 1 = 1`
 
 interface EventRow {
   event_id: string
@@ -39,6 +61,47 @@ interface ScopeRow {
   project_id: string
   workspace_name: string
   project_name: string
+}
+
+interface IndexRow {
+  uri: string
+  kind: ContextKind
+  level: ContextLevel
+  title: string
+  sha256: string
+  version: number
+  updated_at: string
+}
+
+interface TombstoneRow extends ScopeRow {
+  uri: string
+  path: string
+  version: number
+  sha256: string
+  deleted_at: string
+  deleted_by: string
+  commit_hash: string | null
+}
+
+interface LinkRow {
+  from_uri: string
+  to_uri: string
+  cross_project: number
+}
+
+function toIndexEntry(row: IndexRow): ContextIndexEntry {
+  return { uri: row.uri, kind: row.kind, level: row.level, title: row.title, sha256: row.sha256, version: row.version, updatedAt: row.updated_at }
+}
+
+function toScope(row: ScopeRow): ScopeRef {
+  return { workspaceId: row.workspace_id, projectId: row.project_id, workspaceName: row.workspace_name, projectName: row.project_name }
+}
+
+function toTombstone(row: TombstoneRow): ContextTombstone {
+  return {
+    uri: row.uri, path: row.path, scope: toScope(row), version: row.version, sha256: row.sha256,
+    deletedAt: row.deleted_at, deletedBy: row.deleted_by, commit: row.commit_hash ?? undefined,
+  }
 }
 
 export class Ledger {
@@ -171,6 +234,16 @@ export class Ledger {
     return this.sqlite.backup(destination)
   }
 
+  /** Resolves the names in a `viking://` URI to the scope's ids. */
+  resolveScope(workspaceName: string, projectName: string): ScopeRef {
+    const row = this.statement(`SELECT w.id AS workspace_id, p.id AS project_id, w.name AS workspace_name, p.name AS project_name
+      FROM projects p JOIN workspaces w ON w.id = p.workspace_id WHERE w.name = ? AND p.name = ?`).get(workspaceName, projectName) as ScopeRow | undefined
+    if (!row) throw new HiveError('SCOPE_NOT_FOUND', `No project ${workspaceName}/${projectName}`)
+    return toScope(row)
+  }
+
+  // --- Derived context index (C15: canonical files are the source of truth; these rows follow) ---
+
   upsertContextNode(node: ContextNode): void {
     this.statement(`INSERT INTO context_nodes(uri, workspace_id, project_id, kind, level, title, sha256, version, provenance, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -183,9 +256,80 @@ export class Ledger {
     this.statement('DELETE FROM context_nodes WHERE uri = ?').run(uri)
   }
 
-  contextNodeHash(uri: string): string | undefined {
-    const row = this.statement('SELECT sha256 FROM context_nodes WHERE uri = ?').get(uri) as { sha256: string } | undefined
-    return row?.sha256
+  contextNode(uri: string): ContextIndexEntry | undefined {
+    const row = this.statement(`${INDEX_COLUMNS} WHERE uri = ?`).get(uri) as IndexRow | undefined
+    return row ? toIndexEntry(row) : undefined
+  }
+
+  listContextNodes(scope: ScopeRef): ContextIndexEntry[] {
+    const rows = this.statement(`${INDEX_COLUMNS} WHERE workspace_id = ? AND project_id = ? ORDER BY uri`).all(scope.workspaceId, scope.projectId) as IndexRow[]
+    return rows.map(toIndexEntry)
+  }
+
+  // --- Tombstones (C18: a deletion is a durable record, not an absence) ---
+
+  insertTombstone(tombstone: ContextTombstone): void {
+    this.statement(`INSERT INTO context_tombstones(uri, workspace_id, project_id, path, version, sha256, deleted_at, deleted_by, commit_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(uri) DO UPDATE SET path=excluded.path, version=excluded.version, sha256=excluded.sha256, deleted_at=excluded.deleted_at, deleted_by=excluded.deleted_by, commit_hash=excluded.commit_hash`).run(
+      tombstone.uri, tombstone.scope.workspaceId, tombstone.scope.projectId, tombstone.path,
+      tombstone.version, tombstone.sha256, tombstone.deletedAt, tombstone.deletedBy, tombstone.commit ?? null,
+    )
+  }
+
+  /** Recorded after the fact: the deletion commit only exists once the delete has been committed. */
+  setTombstoneCommit(uri: string, commit: string): void {
+    this.statement('UPDATE context_tombstones SET commit_hash = ? WHERE uri = ?').run(commit, uri)
+  }
+
+  tombstone(uri: string): ContextTombstone | undefined {
+    const row = this.statement(`${TOMBSTONE_COLUMNS} AND t.uri = ?`).get(uri) as TombstoneRow | undefined
+    return row ? toTombstone(row) : undefined
+  }
+
+  listTombstones(scope: ScopeRef): ContextTombstone[] {
+    const rows = this.statement(`${TOMBSTONE_COLUMNS} AND t.workspace_id = ? AND t.project_id = ? ORDER BY t.uri`).all(scope.workspaceId, scope.projectId) as TombstoneRow[]
+    return rows.map(toTombstone)
+  }
+
+  removeTombstone(uri: string): void {
+    this.statement('DELETE FROM context_tombstones WHERE uri = ?').run(uri)
+  }
+
+  // --- Links (C3: a link that leaves the project is recorded so it can be audited) ---
+
+  /** Replaces the whole outbound link set for one node, so removed links disappear. */
+  replaceContextLinks(fromUri: string, scope: ScopeRef, links: readonly ContextLinkRef[]): void {
+    this.sqlite.transaction(() => {
+      this.removeContextLinks(fromUri)
+      const insert = this.statement('INSERT OR REPLACE INTO context_links(from_uri, to_uri, workspace_id, project_id, cross_project) VALUES (?, ?, ?, ?, ?)')
+      for (const link of links) insert.run(fromUri, link.toUri, scope.workspaceId, scope.projectId, link.crossProject ? 1 : 0)
+    })
+  }
+
+  listContextLinks(scope: ScopeRef): ContextLinkRef[] {
+    const rows = this.statement('SELECT from_uri, to_uri, cross_project FROM context_links WHERE workspace_id = ? AND project_id = ? ORDER BY from_uri, to_uri').all(scope.workspaceId, scope.projectId) as LinkRow[]
+    // `resolved` depends on the filesystem, so the caller decides it; the row only records intent.
+    return rows.map((row) => ({ fromUri: row.from_uri, toUri: row.to_uri, crossProject: row.cross_project === 1, resolved: false }))
+  }
+
+  removeContextLinks(fromUri: string): void {
+    this.statement('DELETE FROM context_links WHERE from_uri = ?').run(fromUri)
+  }
+
+  // --- Snapshots (C22: content snapshots carry their own manifests) ---
+
+  insertSnapshot(manifest: ContextSnapshotManifest): void {
+    this.statement(`INSERT INTO context_snapshots(id, workspace_id, project_id, label, ref, commit_hash, created_at, created_by, node_count, total_bytes, manifest)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      manifest.snapshotId, manifest.scope.workspaceId, manifest.scope.projectId, manifest.label, manifest.ref,
+      manifest.commit, manifest.createdAt, manifest.createdBy, manifest.nodeCount, manifest.totalBytes, JSON.stringify(manifest),
+    )
+  }
+
+  listSnapshots(scope: ScopeRef): ContextSnapshotManifest[] {
+    const rows = this.statement('SELECT manifest FROM context_snapshots WHERE workspace_id = ? AND project_id = ? ORDER BY created_at DESC, id').all(scope.workspaceId, scope.projectId) as { manifest: string }[]
+    return rows.map((row) => JSON.parse(row.manifest) as ContextSnapshotManifest)
   }
 
   recordAudit(actorId: string, action: string, details: unknown): void {
@@ -236,6 +380,6 @@ export class Ledger {
     const row = this.statement(`SELECT w.id AS workspace_id, p.id AS project_id, w.name AS workspace_name, p.name AS project_name
       FROM projects p JOIN workspaces w ON w.id = p.workspace_id WHERE w.id = ? AND p.id = ?`).get(workspaceId, projectId) as ScopeRow | undefined
     if (!row) throw new HiveError('SCOPE_NOT_FOUND', 'Event scope not found')
-    return { workspaceId: row.workspace_id, projectId: row.project_id, workspaceName: row.workspace_name, projectName: row.project_name }
+    return toScope(row)
   }
 }

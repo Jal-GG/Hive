@@ -3,6 +3,14 @@ import { HiveError } from '../errors.js'
 
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const PATH_PATTERN = /^[^\\/]+(?:\/[^\\/]+)*$/
+const URI_PATTERN = /^viking:\/\/workspace\/([^/]+)\/project\/([^/]+)\/(.+)$/
+
+/** The parts of a `viking://` URI, before any scope is resolved to UUIDs. */
+export interface ResourceUriParts {
+  workspaceName: string
+  projectName: string
+  path: string
+}
 
 export function validateScopeName(value: string, field: string): string {
   if (!NAME_PATTERN.test(value)) throw new HiveError('INVALID_NAME', `${field} is invalid`)
@@ -38,6 +46,34 @@ export function scopeSegments(scope: ScopeRef): string[] {
 }
 
 export function createResourceUri(scope: ScopeRef, path: string): string {
-  const segments = scopeSegments(scope).map(encodeURIComponent).join('/')
-  return `viking://${segments}/${normalizeResourcePath(path)}`
+  return buildResourceUri(scope.workspaceName, scope.projectName, path)
+}
+
+/**
+ * Re-encodes already-parsed parts, so two spellings of the same target collapse
+ * to one canonical URI. Used for links, whose targets may name another project
+ * and therefore have no `ScopeRef` of their own.
+ */
+export function resourceUriFromParts(parts: ResourceUriParts): string {
+  return buildResourceUri(parts.workspaceName, parts.projectName, parts.path)
+}
+
+function buildResourceUri(workspaceName: string, projectName: string, path: string): string {
+  const segments = ['workspace', validateScopeName(workspaceName, 'workspaceName'), 'project', validateScopeName(projectName, 'projectName')]
+  return `viking://${segments.map(encodeURIComponent).join('/')}/${normalizeResourcePath(path)}`
+}
+
+/** The inverse of `createResourceUri`. Canonicalizes before returning, per §6.1. */
+export function parseResourceUri(uri: string): ResourceUriParts {
+  const match = URI_PATTERN.exec(uri)
+  if (!match) throw new HiveError('INVALID_URI', 'URI must be viking://workspace/{workspace}/project/{project}/{path}')
+  return {
+    workspaceName: validateScopeName(decodeURIComponent(match[1]), 'workspaceName'),
+    projectName: validateScopeName(decodeURIComponent(match[2]), 'projectName'),
+    path: normalizeResourcePath(match[3]),
+  }
+}
+
+export function isSameScope(scope: ScopeRef, parts: ResourceUriParts): boolean {
+  return scope.workspaceName === parts.workspaceName && scope.projectName === parts.projectName
 }

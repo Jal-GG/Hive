@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createBackup } from '../../src/backup.js'
 import { EventEnvelope } from '../../src/contracts.js'
+import { schemaVersion } from '../../src/infrastructure/sqlite/migrations.js'
 import { Ledger } from '../../src/ledger.js'
 import { ledgerWithActors, tempDirectory, testActor } from '../fixtures.js'
 
@@ -43,7 +44,8 @@ describe('Phase 1 ledger', () => {
     await expect(createBackup(ledger, source, destination)).rejects.toThrowError('active leases')
     ledger.releaseLease(operator, lease.id)
     const manifest = await createBackup(ledger, source, destination)
-    expect(manifest.schemaVersion).toBe(2)
+    // Pinned to the constant, not a literal: a new migration must not fail this test.
+    expect(manifest.schemaVersion).toBe(schemaVersion)
     expect(readFileSync(destination).byteLength).toBeGreaterThan(0)
     ledger.close()
   })

@@ -1,4 +1,4 @@
-export const schemaVersion = 2
+export const schemaVersion = 3
 
 export const migrations: Record<number, string> = {
   1: `
@@ -16,5 +16,12 @@ export const migrations: Record<number, string> = {
   2: `
     CREATE TABLE IF NOT EXISTS context_nodes (uri TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), project_id TEXT NOT NULL REFERENCES projects(id), kind TEXT NOT NULL, level TEXT NOT NULL, title TEXT NOT NULL, sha256 TEXT NOT NULL, version INTEGER NOT NULL, provenance TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS context_nodes_scope_idx ON context_nodes(workspace_id, project_id);
+  `,
+  3: `
+    CREATE TABLE IF NOT EXISTS context_tombstones (uri TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), project_id TEXT NOT NULL REFERENCES projects(id), path TEXT NOT NULL, version INTEGER NOT NULL, sha256 TEXT NOT NULL, deleted_at TEXT NOT NULL, deleted_by TEXT NOT NULL, commit_hash TEXT);
+    CREATE INDEX IF NOT EXISTS context_tombstones_scope_idx ON context_tombstones(workspace_id, project_id);
+    CREATE TABLE IF NOT EXISTS context_links (from_uri TEXT NOT NULL, to_uri TEXT NOT NULL, workspace_id TEXT NOT NULL REFERENCES workspaces(id), project_id TEXT NOT NULL REFERENCES projects(id), cross_project INTEGER NOT NULL, PRIMARY KEY(from_uri, to_uri));
+    CREATE INDEX IF NOT EXISTS context_links_target_idx ON context_links(to_uri);
+    CREATE TABLE IF NOT EXISTS context_snapshots (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), project_id TEXT NOT NULL REFERENCES projects(id), label TEXT NOT NULL, ref TEXT NOT NULL, commit_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL, node_count INTEGER NOT NULL, total_bytes INTEGER NOT NULL, manifest TEXT NOT NULL, UNIQUE(workspace_id, project_id, label));
   `,
 }

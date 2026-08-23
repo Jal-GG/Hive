@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import {
   ActorContext,
+  AgentProfile,
   ContextIndexEntry,
   ContextKind,
   ContextLevel,
@@ -10,7 +11,11 @@ import {
   ContextTombstone,
   EventEnvelope,
   Lease,
+  Run,
+  RunState,
   ScopeRef,
+  WorktreeRef,
+  terminalRunStates,
 } from './contracts.js'
 import { HiveError } from './errors.js'
 import { SqliteDatabase } from './infrastructure/sqlite/sqlite-database.js'
@@ -31,6 +36,38 @@ const TOMBSTONE_COLUMNS = `SELECT t.uri, t.path, t.version, t.sha256, t.deleted_
   JOIN projects p ON p.id = t.project_id
   WHERE 1 = 1`
 
+/** Runs store scope ids; names are joined back so every `Run` carries a complete `ScopeRef`. */
+const RUN_COLUMNS = `SELECT r.*, w.name AS workspace_name, p.name AS project_name
+  FROM runs r
+  JOIN workspaces w ON w.id = r.workspace_id
+  JOIN projects p ON p.id = r.project_id
+  WHERE 1 = 1`
+
+/** Fields of a run that may change after insert. Everything else is fixed at launch. */
+export interface RunPatch {
+  state?: RunState
+  sessionKey?: string
+  pid?: number | null
+  endedAt?: string | null
+  exitCode?: number | null
+  exitSignal?: string | null
+  transcriptCursor?: string | null
+  importedEventCount?: number
+  lostEventCount?: number
+}
+
+const runPatchColumns: Record<keyof RunPatch, string> = {
+  state: 'state',
+  sessionKey: 'session_key',
+  pid: 'pid',
+  endedAt: 'ended_at',
+  exitCode: 'exit_code',
+  exitSignal: 'exit_signal',
+  transcriptCursor: 'transcript_cursor',
+  importedEventCount: 'imported_event_count',
+  lostEventCount: 'lost_event_count',
+}
+
 interface EventRow {
   event_id: string
   idempotency_key: string
@@ -39,6 +76,8 @@ interface EventRow {
   actor_id: string
   workspace_id: string | null
   project_id: string | null
+  run_id: string | null
+  work_item_id: string | null
   occurred_at: string
   sequence: number | null
   payload: string
@@ -87,6 +126,78 @@ interface LinkRow {
   from_uri: string
   to_uri: string
   cross_project: number
+}
+
+interface RunRow extends ScopeRow {
+  id: string
+  work_item_id: string | null
+  actor_id: string
+  runtime_profile: string
+  backend: Run['backend']
+  session_key: string
+  cwd: string
+  repo_fingerprint: string
+  worktree_fingerprint: string
+  branch: string
+  state: RunState
+  lease_id: string
+  started_at: string
+  ended_at: string | null
+  exit_code: number | null
+  exit_signal: string | null
+  pid: number | null
+  transcript_cursor: string | null
+  imported_event_count: number
+  lost_event_count: number
+}
+
+interface WorktreeRow {
+  run_id: string
+  path: string
+  branch: string
+  base_branch: string
+  base_commit: string | null
+  repo_fingerprint: string
+  worktree_fingerprint: string
+  created_at: string
+}
+
+function assertEventLimit(limit: number): void {
+  if (limit < 1 || limit > 1000) throw new HiveError('INVALID_LIMIT', 'Event limit must be between 1 and 1000')
+}
+
+function toRun(row: RunRow): Run {
+  return {
+    id: row.id,
+    workItemId: row.work_item_id ?? undefined,
+    actorId: row.actor_id,
+    scope: toScope(row),
+    runtimeProfile: row.runtime_profile,
+    backend: row.backend,
+    sessionKey: row.session_key,
+    cwd: row.cwd,
+    repoFingerprint: row.repo_fingerprint,
+    worktreeFingerprint: row.worktree_fingerprint,
+    branch: row.branch,
+    state: row.state,
+    leaseId: row.lease_id,
+    startedAt: row.started_at,
+    endedAt: row.ended_at ?? undefined,
+    exitCode: row.exit_code ?? undefined,
+    exitSignal: row.exit_signal ?? undefined,
+    pid: row.pid ?? undefined,
+    transcriptCursor: row.transcript_cursor ?? undefined,
+    importedEventCount: row.imported_event_count,
+    lostEventCount: row.lost_event_count,
+  }
+}
+
+function toWorktree(row: WorktreeRow): WorktreeRef {
+  return {
+    runId: row.run_id, path: row.path, branch: row.branch, baseBranch: row.base_branch,
+    baseCommit: row.base_commit ?? undefined, repoFingerprint: row.repo_fingerprint,
+    worktreeFingerprint: row.worktree_fingerprint, createdAt: row.created_at,
+  }
 }
 
 function toIndexEntry(row: IndexRow): ContextIndexEntry {
@@ -158,8 +269,8 @@ export class Ledger {
       if (duplicate) return false
       const cursor = this.statement('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM events').get() as { sequence: number }
       this.statement(`INSERT INTO events
-        (event_id, idempotency_key, event_type, source, actor_id, workspace_id, project_id, occurred_at, sequence, payload, parent_event_id, origin_marker)
-        VALUES (@eventId, @idempotencyKey, @eventType, @source, @actorId, @workspaceId, @projectId, @occurredAt, @sequence, @payload, @parentEventId, @originMarker)`).run({
+        (event_id, idempotency_key, event_type, source, actor_id, workspace_id, project_id, run_id, work_item_id, occurred_at, sequence, payload, parent_event_id, origin_marker)
+        VALUES (@eventId, @idempotencyKey, @eventType, @source, @actorId, @workspaceId, @projectId, @runId, @workItemId, @occurredAt, @sequence, @payload, @parentEventId, @originMarker)`).run({
         eventId: event.eventId,
         idempotencyKey: event.idempotencyKey,
         eventType: event.eventType,
@@ -167,6 +278,8 @@ export class Ledger {
         actorId: event.actor.actorId,
         workspaceId: event.scope?.workspaceId ?? null,
         projectId: event.scope?.projectId ?? null,
+        runId: event.runId ?? null,
+        workItemId: event.workItemId ?? null,
         occurredAt: event.occurredAt,
         sequence: cursor.sequence,
         payload: JSON.stringify(event.payload),
@@ -178,9 +291,25 @@ export class Ledger {
   }
 
   readEvents(afterSequence = 0, limit = 100): EventEnvelope[] {
-    if (limit < 1 || limit > 1000) throw new HiveError('INVALID_LIMIT', 'Event limit must be between 1 and 1000')
+    assertEventLimit(limit)
     // Plain `sequence` (never null on insert) so events_sequence_idx is usable.
     const rows = this.statement('SELECT * FROM events WHERE sequence > ? ORDER BY sequence, event_id LIMIT ?').all(afterSequence, limit) as EventRow[]
+    return this.toEnvelopes(rows)
+  }
+
+  /** One run's history, for a terminal view or a post-mortem, without scanning the whole log. */
+  readRunEvents(runId: string, afterSequence = 0, limit = 100): EventEnvelope[] {
+    assertEventLimit(limit)
+    const rows = this.statement('SELECT * FROM events WHERE run_id = ? AND sequence > ? ORDER BY sequence, event_id LIMIT ?').all(runId, afterSequence, limit) as EventRow[]
+    return this.toEnvelopes(rows)
+  }
+
+  /** The newest assigned sequence, so a subscriber can start at "now" instead of replaying history. */
+  latestEventSequence(): number {
+    return (this.statement('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events').get() as { sequence: number }).sequence
+  }
+
+  private toEnvelopes(rows: readonly EventRow[]): EventEnvelope[] {
     const actors = new Map<string, ActorContext>()
     const scopes = new Map<string, ScopeRef>()
     return rows.map((row) => ({
@@ -193,6 +322,8 @@ export class Ledger {
       scope: row.workspace_id && row.project_id
         ? this.cached(scopes, `${row.workspace_id}:${row.project_id}`, () => this.scope(row.workspace_id!, row.project_id!))
         : undefined,
+      runId: row.run_id ?? undefined,
+      workItemId: row.work_item_id ?? undefined,
       occurredAt: row.occurred_at,
       sequence: row.sequence ?? undefined,
       payload: JSON.parse(row.payload) as Record<string, unknown>,
@@ -330,6 +461,134 @@ export class Ledger {
   listSnapshots(scope: ScopeRef): ContextSnapshotManifest[] {
     const rows = this.statement('SELECT manifest FROM context_snapshots WHERE workspace_id = ? AND project_id = ? ORDER BY created_at DESC, id').all(scope.workspaceId, scope.projectId) as { manifest: string }[]
     return rows.map((row) => JSON.parse(row.manifest) as ContextSnapshotManifest)
+  }
+
+  // --- Agent profiles, runs, and worktrees (§6.3) ---
+
+  /** Profiles are content-addressed by id: re-registering the same id updates it in place. */
+  upsertAgentProfile(profile: AgentProfile): void {
+    this.statement(`INSERT INTO agent_profiles(id, provider, backend, executable, definition, registered_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, backend=excluded.backend, executable=excluded.executable, definition=excluded.definition, registered_at=excluded.registered_at`).run(
+      profile.id, profile.provider, profile.backend, profile.executable, JSON.stringify(profile), this.timestamp(),
+    )
+  }
+
+  agentProfile(id: string): AgentProfile | undefined {
+    const row = this.statement('SELECT definition FROM agent_profiles WHERE id = ?').get(id) as { definition: string } | undefined
+    return row ? (JSON.parse(row.definition) as AgentProfile) : undefined
+  }
+
+  listAgentProfiles(): AgentProfile[] {
+    const rows = this.statement('SELECT definition FROM agent_profiles ORDER BY id').all() as { definition: string }[]
+    return rows.map((row) => JSON.parse(row.definition) as AgentProfile)
+  }
+
+  insertRun(run: Run): void {
+    this.statement(`INSERT INTO runs
+      (id, work_item_id, actor_id, workspace_id, project_id, runtime_profile, backend, session_key, cwd,
+       repo_fingerprint, worktree_fingerprint, branch, state, lease_id, started_at, ended_at, exit_code, exit_signal,
+       pid, transcript_cursor, imported_event_count, lost_event_count)
+      VALUES (@id, @workItemId, @actorId, @workspaceId, @projectId, @runtimeProfile, @backend, @sessionKey, @cwd,
+       @repoFingerprint, @worktreeFingerprint, @branch, @state, @leaseId, @startedAt, @endedAt, @exitCode, @exitSignal,
+       @pid, @transcriptCursor, @importedEventCount, @lostEventCount)`).run({
+      id: run.id,
+      workItemId: run.workItemId ?? null,
+      actorId: run.actorId,
+      workspaceId: run.scope.workspaceId,
+      projectId: run.scope.projectId,
+      runtimeProfile: run.runtimeProfile,
+      backend: run.backend,
+      sessionKey: run.sessionKey,
+      cwd: run.cwd,
+      repoFingerprint: run.repoFingerprint,
+      worktreeFingerprint: run.worktreeFingerprint,
+      branch: run.branch,
+      state: run.state,
+      leaseId: run.leaseId,
+      startedAt: run.startedAt,
+      endedAt: run.endedAt ?? null,
+      exitCode: run.exitCode ?? null,
+      exitSignal: run.exitSignal ?? null,
+      pid: run.pid ?? null,
+      transcriptCursor: run.transcriptCursor ?? null,
+      importedEventCount: run.importedEventCount,
+      lostEventCount: run.lostEventCount,
+    })
+  }
+
+  /**
+   * Patches only the fields present. Column names come from a fixed table rather
+   * than from the patch's keys, so no caller can name a column.
+   */
+  updateRun(runId: string, patch: RunPatch): void {
+    const assignments: string[] = []
+    const values: unknown[] = []
+    for (const [field, column] of Object.entries(runPatchColumns) as [keyof RunPatch, string][]) {
+      const value = patch[field]
+      if (value === undefined) continue
+      assignments.push(`${column} = ?`)
+      values.push(value)
+    }
+    if (assignments.length === 0) return
+    const result = this.statement(`UPDATE runs SET ${assignments.join(', ')} WHERE id = ?`).run(...values, runId)
+    if (result.changes !== 1) throw new HiveError('RUN_NOT_FOUND', `Run ${runId} not found`)
+  }
+
+  run(runId: string): Run | undefined {
+    const row = this.statement(`${RUN_COLUMNS} AND r.id = ?`).get(runId) as RunRow | undefined
+    return row ? toRun(row) : undefined
+  }
+
+  runBySession(backend: Run['backend'], sessionKey: string): Run | undefined {
+    const row = this.statement(`${RUN_COLUMNS} AND r.backend = ? AND r.session_key = ?`).get(backend, sessionKey) as RunRow | undefined
+    return row ? toRun(row) : undefined
+  }
+
+  listRuns(scope?: ScopeRef, states?: readonly RunState[]): Run[] {
+    const clauses: string[] = []
+    const values: unknown[] = []
+    if (scope) {
+      clauses.push('r.workspace_id = ? AND r.project_id = ?')
+      values.push(scope.workspaceId, scope.projectId)
+    }
+    if (states && states.length > 0) {
+      clauses.push(`r.state IN (${states.map(() => '?').join(', ')})`)
+      values.push(...states)
+    }
+    const where = clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : ''
+    const rows = this.statement(`${RUN_COLUMNS}${where} ORDER BY r.started_at DESC, r.id`).all(...values) as RunRow[]
+    return rows.map(toRun)
+  }
+
+  /** Every run whose row claims it is still alive — the set a restart has to account for. */
+  listUnfinishedRuns(): Run[] {
+    const rows = this.statement(`${RUN_COLUMNS} AND r.state NOT IN (${terminalRunStates.map(() => '?').join(', ')}) ORDER BY r.started_at`).all(...terminalRunStates) as RunRow[]
+    return rows.map(toRun)
+  }
+
+  insertWorktree(worktree: WorktreeRef): void {
+    this.statement(`INSERT INTO run_worktrees(run_id, path, branch, base_branch, base_commit, repo_fingerprint, worktree_fingerprint, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      worktree.runId, worktree.path, worktree.branch, worktree.baseBranch, worktree.baseCommit ?? null,
+      worktree.repoFingerprint, worktree.worktreeFingerprint, worktree.createdAt,
+    )
+  }
+
+  worktree(runId: string): WorktreeRef | undefined {
+    const row = this.statement('SELECT * FROM run_worktrees WHERE run_id = ?').get(runId) as WorktreeRow | undefined
+    return row ? toWorktree(row) : undefined
+  }
+
+  listWorktrees(repoFingerprint?: string): WorktreeRef[] {
+    const rows = repoFingerprint === undefined
+      ? this.statement('SELECT * FROM run_worktrees ORDER BY created_at, run_id').all() as WorktreeRow[]
+      : this.statement('SELECT * FROM run_worktrees WHERE repo_fingerprint = ? ORDER BY created_at, run_id').all(repoFingerprint) as WorktreeRow[]
+    return rows.map(toWorktree)
+  }
+
+  removeWorktree(runId: string): void {
+    this.statement('DELETE FROM run_worktrees WHERE run_id = ?').run(runId)
   }
 
   recordAudit(actorId: string, action: string, details: unknown): void {

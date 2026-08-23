@@ -1,10 +1,8 @@
-import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { ContextPackMetadata, ContextVersionRef } from '../../contracts.js'
 import { HiveError } from '../../errors.js'
+import { GitRunner, gitIdentityArgs } from '../../shared/git.js'
 
-const IDENTITY = ['-c', 'user.name=Hive', '-c', 'user.email=hive@localhost']
+const IDENTITY = [...gitIdentityArgs]
 /** Neither the hash nor the ISO committer date contains a space, so the subject is everything after the second one. */
 const LOG_FORMAT = '--format=%H %cI %s'
 const NOTHING_TO_COMMIT = /nothing to commit|no changes added|nothing added to commit/
@@ -18,9 +16,12 @@ const UNMATCHED_PATHSPEC = /did not match any files/
  * consumers never pay for it.
  */
 export class ContextGitRepository {
+  private readonly git: GitRunner
   private initialized = false
 
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string) {
+    this.git = new GitRunner(root)
+  }
 
   /** Stages the given paths and commits them. Returns the new commit, or undefined when nothing changed. */
   commit(relativePaths: string[], message: string): string | undefined {
@@ -106,26 +107,15 @@ export class ContextGitRepository {
 
   private ensureRepository(): void {
     if (this.initialized) return
-    if (!existsSync(join(this.root, '.git'))) this.run(['init', '--quiet', '--initial-branch=main'])
+    if (!this.git.isRepository()) this.git.init()
     this.initialized = true
   }
 
   private tryRun(argv: string[], options?: { trim: boolean }): string | undefined {
-    try {
-      return this.run(argv, options)
-    } catch {
-      return undefined
-    }
+    return this.git.tryRun(argv, options)
   }
 
   private run(argv: string[], options: { trim: boolean } = { trim: true }): string {
-    try {
-      const output = execFileSync('git', argv, { cwd: this.root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
-      return options.trim ? output.trim() : output
-    } catch (error) {
-      const detail = error as { stdout?: string; stderr?: string }
-      const reason = `${detail.stderr ?? ''}${detail.stdout ?? ''}`.trim() || String(error)
-      throw new HiveError('GIT_FAILED', `git ${argv.filter((argument) => argument !== '-c').join(' ')} failed: ${reason}`)
-    }
+    return this.git.run(argv, options)
   }
 }

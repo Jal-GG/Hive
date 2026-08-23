@@ -11,6 +11,9 @@ export type Capability =
   | 'context:write'
   | 'event:ingest'
   | 'backup:create'
+  /** Observing the roster, run state, and transcripts. Deliberately separate from `runtime:control`
+   *  so a read-only viewer can watch a fleet it cannot start, steer, or stop. */
+  | 'runtime:read'
 
 export type EventType = 'Hook' | 'Pty' | 'Work' | 'Mail' | 'Merge' | 'Context' | 'Trigger' | 'UI' | 'System'
 
@@ -41,6 +44,8 @@ export interface EventEnvelope {
   source: string
   actor: ActorContext
   scope?: ScopeRef
+  runId?: string
+  workItemId?: string
   occurredAt: string
   sequence?: number
   payload: Record<string, unknown>
@@ -229,3 +234,197 @@ export interface ContextReconcileReport {
 export type ResultEnvelope<T> =
   | { version: 1; requestId: string; ok: true; data: T }
   | { version: 1; requestId: string; ok: false; error: { code: string; message: string } }
+
+// --- Runtime, worktree, and run (§6.3) ---
+
+export type RuntimeProvider = 'claude' | 'codex' | 'grok' | 'qwen' | 'opencode' | 'crush' | 'pi' | 'copilot' | 'fake' | 'other'
+
+/** C6: node-pty is the lifecycle contract; tmux and bare processes are alternative backends behind it. */
+export type RuntimeBackend = 'node_pty' | 'tmux' | 'process' | 'fake'
+
+/**
+ * What a backend can actually do, declared rather than assumed. A caller that
+ * needs `resize` must check for it instead of discovering at runtime that a
+ * backend silently ignored the request.
+ */
+export type RuntimeCapability =
+  | 'interactive'
+  | 'resize'
+  | 'transcript'
+  | 'heartbeat'
+  | 'process_tree_kill'
+  /** Outlives the host process, so a restart can re-adopt the session instead of orphaning it. */
+  | 'persistent_session'
+
+export type RunState = 'spawning' | 'running' | 'idle' | 'completing' | 'done' | 'stalled' | 'zombie' | 'escalated' | 'cancelled'
+
+/** Run states from which no further transition happens, so the row is final. */
+export const terminalRunStates: readonly RunState[] = ['done', 'zombie', 'escalated', 'cancelled']
+
+/** How a compiled context packet reaches the agent: on its command line, or written after readiness. */
+export type PromptDelivery = 'stdin' | 'argument' | 'none'
+
+/**
+ * Which host environment variables a provider may inherit. Names are matched
+ * case-insensitively (Windows treats them that way) and `PREFIX_*` wildcards are
+ * allowed — but a wildcard never matches a secret-looking name, so inheriting a
+ * credential is always a deliberate, auditable act of naming it exactly.
+ */
+export interface EnvironmentPolicy {
+  allow: string[]
+  deny: string[]
+  set: Record<string, string>
+}
+
+export interface AgentProfile {
+  id: string
+  provider: RuntimeProvider
+  executable: string
+  argsTemplate: string[]
+  environmentPolicy: EnvironmentPolicy
+  capabilities: RuntimeCapability[]
+  backend: RuntimeBackend
+  transcriptAdapter?: string
+  /** Regular-expression source matched against output to decide readiness; absent means ready on spawn. */
+  readyPattern?: string
+  promptDelivery: PromptDelivery
+  /** Silence beyond this becomes the `idle` run state; supervision in Phase 5 acts on it. */
+  idleAfterMs?: number
+}
+
+/**
+ * Identity handed to the child explicitly (C16). Nothing about who a run belongs
+ * to is inferred from the working directory or inherited from the parent
+ * environment, so a child cannot mistake itself for another run.
+ */
+export interface RuntimeIdentity {
+  runId: string
+  actorId: string
+  agentId?: string
+  workspaceName: string
+  projectName: string
+  workItemId?: string
+  branch: string
+  originMarker: string
+}
+
+export interface WorktreeRef {
+  runId: string
+  path: string
+  branch: string
+  baseBranch: string
+  baseCommit?: string
+  /** Identity of the repository itself, stable across clones' paths where a root commit exists. */
+  repoFingerprint: string
+  /** Identity of this checkout, so two runs can never be mistaken for one another. */
+  worktreeFingerprint: string
+  createdAt: string
+}
+
+export interface WorktreeStatus {
+  path: string
+  branch: string
+  headCommit?: string
+  /** Files with uncommitted changes, from `status --porcelain`. */
+  dirtyFiles: string[]
+  clean: boolean
+  /** Commits on the run branch that the base branch does not have. */
+  aheadOfBase: number
+  exists: boolean
+}
+
+/** The answer to "may this worktree be deleted now?", with the reasons attached. */
+export interface WorktreeCleanupDecision {
+  runId: string
+  allowed: boolean
+  /** Every gate that refused: unfinished run, uncommitted work, or unmerged commits. */
+  blockedBy: string[]
+  status?: WorktreeStatus
+}
+
+export interface Run {
+  id: string
+  workItemId?: string
+  actorId: string
+  scope: ScopeRef
+  runtimeProfile: string
+  backend: RuntimeBackend
+  sessionKey: string
+  cwd: string
+  repoFingerprint: string
+  worktreeFingerprint: string
+  branch: string
+  state: RunState
+  leaseId: string
+  startedAt: string
+  endedAt?: string
+  exitCode?: number
+  exitSignal?: string
+  pid?: number
+  transcriptCursor?: string
+  importedEventCount: number
+  lostEventCount: number
+}
+
+export interface RuntimeExit {
+  code?: number
+  signal?: string
+  exitedAt: string
+}
+
+export interface RuntimeStatus {
+  sessionKey: string
+  backend: RuntimeBackend
+  pid?: number
+  alive: boolean
+  ready: boolean
+  cols: number
+  rows: number
+  /** Byte counts only: output volume is observable without any output text being retained (C16). */
+  bytesOut: number
+  bytesIn: number
+  lastOutputAt?: string
+  exit?: RuntimeExit
+}
+
+export interface RuntimeHeartbeat {
+  sessionKey: string
+  observedAt: string
+  alive: boolean
+  idleMs: number
+}
+
+// --- Read-only transcript import (C17) ---
+
+export interface TranscriptEntry {
+  /** Derived from file identity and content, so re-importing the same line is recognized, not duplicated. */
+  id: string
+  role: 'user' | 'assistant' | 'tool' | 'system' | 'unknown'
+  text: string
+  occurredAt?: string
+  tokensIn?: number
+  tokensOut?: number
+}
+
+export interface TranscriptSlice {
+  schema: string
+  entries: TranscriptEntry[]
+  /** Opaque resume position; pass it back to continue where this slice ended. */
+  cursor?: string
+  /** Lines the adapter could not decode. Reported rather than dropped, so loss is measurable. */
+  lostCount: number
+  /** False when the source ended mid-record, meaning more of the tail is still being written. */
+  complete: boolean
+}
+
+export interface RunReconcileReport {
+  scanned: number
+  /** Persistent sessions still alive after a restart, re-adopted rather than orphaned. */
+  readopted: number
+  /** Runs whose process is gone but whose row never reached a terminal state. */
+  zombies: number
+  /** Leases released because the run behind them had already ended. */
+  leasesReleased: number
+  /** Worktrees left in place because a cleanup gate refused. */
+  retainedWorktrees: WorktreeCleanupDecision[]
+}

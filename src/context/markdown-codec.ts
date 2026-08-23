@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
-import { ContextLevel, ContextNode, ContextProvenance, ScopeRef } from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { createResourceUri } from '../../scope/resource-uri.js'
-import { kindOf } from '../context-namespace.js'
+import { ContextLevel, ContextNode, ContextProvenance, ScopeRef } from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { createResourceUri } from '../resource-uri.js'
+import { kindOf } from './namespace.js'
 
 const FRONT_MATTER = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/
 const LEVELS: readonly string[] = ['L0', 'L1', 'L2']

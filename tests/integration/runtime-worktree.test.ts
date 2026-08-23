@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { Run, RunState, WorktreeRef } from '../../src/contracts.js'
 import { HiveError } from '../../src/errors.js'
-import { GitWorktreeManager, branchName, slug } from '../../src/runtime/worktree/git-worktree.js'
+import { GitWorktreeManager, branchName, slug } from '../../src/runtime/worktree-manager.js'
 import { GitRunner, gitIdentityArgs } from '../../src/shared/git.js'
 import { gitRepository, tempDirectory, testClock } from '../fixtures.js'
 

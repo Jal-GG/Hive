@@ -1,8 +1,8 @@
-import { ActorContext, ResultEnvelope } from '../../contracts.js'
-import { HiveError, asAsyncResult } from '../../errors.js'
-import { assertCapability } from '../../identity/capabilities.js'
-import { createId } from '../../shared/ids.js'
-import { RunManager } from '../run-manager.js'
+import { ActorContext, ResultEnvelope } from '../contracts.js'
+import { HiveError, asAsyncResult } from '../errors.js'
+import { assertCapability } from '../capabilities.js'
+import { createId } from '../shared.js'
+import { RunManager } from './run-manager.js'
 
 export type RuntimeControlOperation = 'launch' | 'write' | 'resize' | 'stop' | 'cleanup' | 'import' | 'reconcile'
 

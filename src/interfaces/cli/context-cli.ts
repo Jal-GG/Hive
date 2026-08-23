@@ -5,7 +5,7 @@ import {
   ContextBrowser,
   contextBrowseHelp,
   contextBrowseOperations,
-} from '../../context/browsing/context-browser.js'
+} from '../../context/browser.js'
 import { HiveError } from '../../errors.js'
 
 const operationSet = new Set<string>(contextBrowseOperations)

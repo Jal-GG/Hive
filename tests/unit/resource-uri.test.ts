@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assertCompleteScope, createResourceUri, normalizeResourcePath } from '../../src/scope/resource-uri.js'
+import { assertCompleteScope, createResourceUri, normalizeResourcePath } from '../../src/resource-uri.js'
 import { HiveError } from '../../src/errors.js'
 
 describe('resource URI policy', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ContextNode } from '../../src/contracts.js'
-import { ContextMarkdownCodec } from '../../src/context/markdown/context-markdown-codec.js'
+import { ContextMarkdownCodec } from '../../src/context/markdown-codec.js'
 import { HiveError } from '../../src/errors.js'
 
 const codec = new ContextMarkdownCodec()

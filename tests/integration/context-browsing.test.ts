@@ -5,7 +5,7 @@ import {
   ContextBrowseOperation,
   ContextBrowseRequest,
   contextBrowseOperations,
-} from '../../src/context/browsing/context-browser.js'
+} from '../../src/context/browser.js'
 import { HiveError } from '../../src/errors.js'
 import { runContextCli, usage } from '../../src/interfaces/cli/context-cli.js'
 import { ContextHttpServer } from '../../src/interfaces/http/context-http-server.js'

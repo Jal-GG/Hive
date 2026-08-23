@@ -6,16 +6,16 @@ import {
   ContextTreeEntry,
   ContextVersionRef,
   ScopeRef,
-} from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { Ledger } from '../../ledger.js'
-import { createResourceUri, normalizeResourcePath } from '../../scope/resource-uri.js'
-import { Clock } from '../../shared/clock.js'
-import { ContextGitRepository } from '../git/context-git-repository.js'
-import { ContextMarkdownCodec } from '../markdown/context-markdown-codec.js'
-import { ContextFileStore } from '../storage/context-file-store.js'
-import { assertNamespacedPath, namespaceOf } from '../context-namespace.js'
-import { compileGlob } from '../matching/context-glob.js'
+} from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { Ledger } from '../ledger.js'
+import { createResourceUri, normalizeResourcePath } from '../resource-uri.js'
+import { Clock } from '../shared.js'
+import { ContextGitRepository } from './git-repository.js'
+import { ContextMarkdownCodec } from './markdown-codec.js'
+import { ContextFileStore } from './file-store.js'
+import { assertNamespacedPath, namespaceOf } from './namespace.js'
+import { compileGlob } from './glob.js'
 
 export interface GrepOptions {
   /** Restrict the search to a subtree. */

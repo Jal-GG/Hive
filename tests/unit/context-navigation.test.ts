@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { assertNamespacedPath, kindOf, namespaceOf } from '../../src/context/context-namespace.js'
-import { classifyLinks } from '../../src/context/context-links.js'
-import { compileGlob, matchesGlob } from '../../src/context/matching/context-glob.js'
+import { assertNamespacedPath, kindOf, namespaceOf } from '../../src/context/namespace.js'
+import { classifyLinks } from '../../src/context/links.js'
+import { compileGlob, matchesGlob } from '../../src/context/glob.js'
 import { HiveError } from '../../src/errors.js'
 
 const scope = { workspaceId: 'w', projectId: 'p', workspaceName: 'main', projectName: 'hive' }

@@ -1,14 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { RuntimeBackend, RuntimeCapability, RuntimeExit, RuntimeHeartbeat, RuntimeStatus } from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { Clock, ClockOptions, resolveClock } from '../../shared/clock.js'
-import { ensureParentDirectory } from '../../shared/fs.js'
-import { buildCommand } from '../provider-catalog.js'
-import { KillOptions, RuntimeAdapter, RuntimeSession, RuntimeSpawnRequest, Unsubscribe } from '../runtime-adapter.js'
-import { SessionOutput } from '../runtime-session-support.js'
-import { signalName } from '../pty/node-pty-runtime.js'
+import { RuntimeBackend, RuntimeCapability, RuntimeExit, RuntimeHeartbeat, RuntimeStatus } from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { Clock, ClockOptions, resolveClock } from '../shared.js'
+import { ensureParentDirectory } from '../shared.js'
+import { buildCommand } from './provider-catalog.js'
+import { KillOptions, RuntimeAdapter, RuntimeSession, RuntimeSpawnRequest, Unsubscribe } from './runtime-adapter.js'
+import { SessionOutput } from './runtime-session-support.js'
+import { signalName } from './node-pty-backend.js'
 
 /** Injected so command construction can be asserted without a tmux server. */
 export interface TmuxCommandRunner {
@@ -241,8 +241,7 @@ export class TmuxSession implements RuntimeSession {
     this.runner.run(['kill-session', '-t', this.sessionKey])
     this.drainLog()
     const status = this.readExitStatus()
-    this.settle(status.code === undefined && status.signal === undefined ? { signal: options.signal ?? 'SIGTERM', exitedAt: status.exitedAt } : status)
-    return this.output.exit as RuntimeExit
+    return this.settle(status.code === undefined && status.signal === undefined ? { signal: options.signal ?? 'SIGTERM', exitedAt: status.exitedAt } : status)
   }
 
   inspect(): RuntimeStatus {
@@ -324,10 +323,11 @@ export class TmuxSession implements RuntimeSession {
     return { code, exitedAt }
   }
 
-  private settle(exit: RuntimeExit): void {
+  private settle(exit: RuntimeExit): RuntimeExit {
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
     this.output.finish(exit)
+    return exit
   }
 
   private assertAlive(): void {

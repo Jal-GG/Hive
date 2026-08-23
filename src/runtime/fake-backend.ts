@@ -1,9 +1,9 @@
-import { RuntimeBackend, RuntimeCapability, RuntimeExit, RuntimeHeartbeat, RuntimeStatus } from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { Clock, ClockOptions, resolveClock } from '../../shared/clock.js'
-import { KillOptions, RuntimeAdapter, RuntimeSession, RuntimeSpawnRequest, Unsubscribe } from '../runtime-adapter.js'
-import { buildCommand } from '../provider-catalog.js'
-import { SessionOutput } from '../runtime-session-support.js'
+import { RuntimeBackend, RuntimeCapability, RuntimeExit, RuntimeHeartbeat, RuntimeStatus } from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { Clock, ClockOptions, resolveClock } from '../shared.js'
+import { KillOptions, RuntimeAdapter, RuntimeSession, RuntimeSpawnRequest, Unsubscribe } from './runtime-adapter.js'
+import { buildCommand } from './provider-catalog.js'
+import { SessionOutput } from './runtime-session-support.js'
 
 /**
  * Sessions keyed by session key, outliving any single adapter instance.
@@ -152,8 +152,7 @@ export class FakeSession implements RuntimeSession {
   async kill(options: KillOptions = {}): Promise<RuntimeExit> {
     if (this.output.exit) return this.output.exit
     // A killed process reports the signal that ended it, never a fabricated code.
-    this.settle({ signal: options.signal ?? 'SIGTERM', exitedAt: this.now().toISOString() })
-    return this.output.exit as RuntimeExit
+    return this.settle({ signal: options.signal ?? 'SIGTERM', exitedAt: this.now().toISOString() })
   }
 
   inspect(): RuntimeStatus {
@@ -223,10 +222,11 @@ export class FakeSession implements RuntimeSession {
     this.output.push(`echo: ${line}\r\n`)
   }
 
-  private settle(exit: RuntimeExit): void {
+  private settle(exit: RuntimeExit): RuntimeExit {
     this.output.push(`exit ${exit.code ?? exit.signal ?? 'unknown'}\r\n`)
     this.output.finish(exit)
     this.store.delete(this.sessionKey)
+    return exit
   }
 
   private assertAlive(): void {

@@ -16,16 +16,16 @@ import {
   terminalRunStates,
 } from '../contracts.js'
 import { HiveError } from '../errors.js'
-import { assertCapability } from '../identity/capabilities.js'
+import { assertCapability } from '../capabilities.js'
 import { Ledger } from '../ledger.js'
-import { Clock, ClockOptions, resolveClock } from '../shared/clock.js'
-import { createId } from '../shared/ids.js'
+import { Clock, ClockOptions, resolveClock } from '../shared.js'
+import { createId } from '../shared.js'
 import { resolveEnvironment } from './environment.js'
 import { ProviderCatalog } from './provider-catalog.js'
 import { redactArguments, redactEnvironment } from './redaction.js'
 import { KillOptions, RuntimeAdapter, RuntimeSession, TranscriptAdapter, Unsubscribe } from './runtime-adapter.js'
 import { RuntimeRegistry } from './runtime-registry.js'
-import { GitWorktreeManager } from './worktree/git-worktree.js'
+import { GitWorktreeManager } from './worktree-manager.js'
 
 /** Marks events this runtime produced, so a hook or watcher never replays them as external activity. */
 export const runtimeOriginMarker = 'hive:runtime'

@@ -1,6 +1,6 @@
 import { RuntimeExit } from '../contracts.js'
 import { HiveError } from '../errors.js'
-import { Clock } from '../shared/clock.js'
+import { Clock } from '../shared.js'
 import { Unsubscribe } from './runtime-adapter.js'
 
 const defaultScrollbackBytes = 256 * 1024

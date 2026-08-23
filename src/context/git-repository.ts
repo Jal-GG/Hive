@@ -1,6 +1,6 @@
-import { ContextPackMetadata, ContextVersionRef } from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { GitRunner, gitIdentityArgs } from '../../shared/git.js'
+import { ContextPackMetadata, ContextVersionRef } from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { GitRunner, gitIdentityArgs } from '../shared/git.js'
 
 const IDENTITY = [...gitIdentityArgs]
 /** Neither the hash nor the ISO committer date contains a space, so the subject is everything after the second one. */

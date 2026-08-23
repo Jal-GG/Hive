@@ -14,20 +14,20 @@ import {
   ContextTreeEntry,
   ContextVersionRef,
   ScopeRef,
-} from './contracts.js'
-import { HiveError } from './errors.js'
-import { Ledger } from './ledger.js'
-import { assertCapability } from './identity/capabilities.js'
-import { createResourceUri, normalizeResourcePath } from './scope/resource-uri.js'
-import { Clock, ClockOptions, resolveClock } from './shared/clock.js'
-import { ContextAction, contextEvent } from './context/context-events.js'
-import { classifyLinks } from './context/context-links.js'
-import { assertNamespacedPath, kindOf } from './context/context-namespace.js'
-import { ContextGitRepository } from './context/git/context-git-repository.js'
-import { ContextMarkdownCodec } from './context/markdown/context-markdown-codec.js'
-import { ContextNavigator, GrepOptions } from './context/navigation/context-navigator.js'
-import { ContextSnapshots } from './context/snapshots/context-snapshots.js'
-import { ContextFileStore } from './context/storage/context-file-store.js'
+} from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { Ledger } from '../ledger.js'
+import { assertCapability } from '../capabilities.js'
+import { createResourceUri, normalizeResourcePath } from '../resource-uri.js'
+import { Clock, ClockOptions, resolveClock } from '../shared.js'
+import { ContextAction, contextEvent } from './events.js'
+import { classifyLinks } from './links.js'
+import { assertNamespacedPath, kindOf } from './namespace.js'
+import { ContextGitRepository } from './git-repository.js'
+import { ContextMarkdownCodec } from './markdown-codec.js'
+import { ContextNavigator, GrepOptions } from './navigator.js'
+import { ContextSnapshots } from './snapshots.js'
+import { ContextFileStore } from './file-store.js'
 
 export interface ContextFilesystemOptions extends ClockOptions {
   /** When false, no Git repository is created; history, restore, and snapshots are then unavailable. */

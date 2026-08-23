@@ -1,9 +1,9 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
-import { ContextEntry, ScopeRef } from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { createId } from '../../shared/ids.js'
-import { createResourceUri, scopeSegments } from '../../scope/resource-uri.js'
+import { ContextEntry, ScopeRef } from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { createId } from '../shared.js'
+import { createResourceUri, scopeSegments } from '../resource-uri.js'
 
 export interface FileInfo {
   bytes: number

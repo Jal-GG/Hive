@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
-import { migrations, schemaVersion } from './migrations.js'
-import { Clock, ClockOptions, resolveClock } from '../../shared/clock.js'
-import { ensureParentDirectory } from '../../shared/fs.js'
+import { migrations, schemaVersion } from './sqlite-migrations.js'
+import { Clock, ClockOptions, resolveClock } from './shared.js'
+import { ensureParentDirectory } from './shared.js'
 
 export type DatabaseOptions = ClockOptions
 

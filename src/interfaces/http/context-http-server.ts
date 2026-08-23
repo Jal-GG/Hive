@@ -7,7 +7,7 @@ import {
   ContextBrowser,
   contextBrowseHelp,
   contextBrowseOperations,
-} from '../../context/browsing/context-browser.js'
+} from '../../context/browser.js'
 
 const loopback = '127.0.0.1'
 

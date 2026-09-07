@@ -10,9 +10,10 @@
     "build:desktop": "node scripts/build-desktop.mjs && vite build",
     "desktop": "npm run build:desktop && electron ."
   },
-  "main": "dist/desktop/main.js",
+  "main": "dist/desktop/main.cjs",
   "dependencies": {
     "better-sqlite3": "^11.8.1",
+    "node-pty": "^1.1.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {

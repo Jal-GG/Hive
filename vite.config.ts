@@ -16,7 +16,9 @@ export default defineConfig({
   },
   plugins: [react()],
   build: {
-    outDir: '../../dist/renderer',
+    // Beside the bundled main/preload entries, so one directory is the whole
+    // desktop artifact and `loadFile` has a single relative root.
+    outDir: '../../dist/desktop/renderer',
     emptyOutDir: true,
   },
 })

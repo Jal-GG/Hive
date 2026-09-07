@@ -17,8 +17,13 @@ for (const entry of ['main', 'preload']) {
     platform: 'node',
     format: 'cjs',
     target: 'node20',
-    outfile: join(outdir, `${entry}.js`),
-    external: ['electron'],
+    // .cjs because the package is "type": "module": Electron loads the main
+    // entry as CommonJS regardless, and the extension is what Node/Electron
+    // use to decide how to parse it.
+    outfile: join(outdir, `${entry}.cjs`),
+    // Native modules must stay external: bundling breaks the `bindings` path
+    // search, and the .node file only loads against the ABI it was built for.
+    external: ['electron', 'better-sqlite3'],
     sourcemap: false,
     logLevel: 'info',
   })

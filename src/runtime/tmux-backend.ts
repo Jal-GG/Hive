@@ -241,8 +241,7 @@ export class TmuxSession implements RuntimeSession {
     this.runner.run(['kill-session', '-t', this.sessionKey])
     this.drainLog()
     const status = this.readExitStatus()
-    this.settle(status.code === undefined && status.signal === undefined ? { signal: options.signal ?? 'SIGTERM', exitedAt: status.exitedAt } : status)
-    return this.output.exit as RuntimeExit
+    return this.settle(status.code === undefined && status.signal === undefined ? { signal: options.signal ?? 'SIGTERM', exitedAt: status.exitedAt } : status)
   }
 
   inspect(): RuntimeStatus {
@@ -324,10 +323,11 @@ export class TmuxSession implements RuntimeSession {
     return { code, exitedAt }
   }
 
-  private settle(exit: RuntimeExit): void {
+  private settle(exit: RuntimeExit): RuntimeExit {
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
     this.output.finish(exit)
+    return exit
   }
 
   private assertAlive(): void {

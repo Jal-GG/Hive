@@ -1,6 +1,5 @@
 import { Run, RunState, RuntimeStatus } from '../../contracts.js'
-import { Unsubscribe } from '../../runtime/runtime-adapter.js'
-import { RuntimeBridge, RuntimeStreamData, runtimeIpcPrefix, runtimeStreamChannels } from './runtime-ipc.js'
+import { RuntimeBridge, RuntimeStreamData, runtimeIpcPrefix, runtimeStreamChannels, type Unsubscribe } from './runtime-channels.js'
 
 /** Same bound as a session's scrollback: a terminal view keeps a tail, not a history. */
 const defaultBufferBytes = 256 * 1024

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { Run, WorktreeCleanupDecision, WorktreeRef, WorktreeStatus, terminalRunStates } from '../contracts.js'
 import { HiveError } from '../errors.js'
 import { Clock, ClockOptions, resolveClock } from '../shared.js'
@@ -133,7 +133,9 @@ export class GitWorktreeManager {
     for (const line of output.split('\n')) {
       if (line.startsWith('worktree ')) {
         if (current) entries.push(current)
-        current = { path: line.slice('worktree '.length).trim(), prunable: false }
+        // Git reports paths with forward slashes on every platform; resolving puts them
+        // in native form so they compare equal to the `WorktreeRef.path` we stored.
+        current = { path: resolve(line.slice('worktree '.length).trim()), prunable: false }
         continue
       }
       if (!current) continue

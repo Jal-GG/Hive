@@ -23,7 +23,9 @@ for (const entry of ['main', 'preload']) {
     outfile: join(outdir, `${entry}.cjs`),
     // Native modules must stay external: bundling breaks the `bindings` path
     // search, and the .node file only loads against the ABI it was built for.
-    external: ['electron', 'better-sqlite3'],
+    // node-pty is loaded through a dynamic specifier so esbuild leaves it alone
+    // regardless; listing it keeps that guarantee if the import ever goes static.
+    external: ['electron', 'better-sqlite3', 'node-pty'],
     sourcemap: false,
     logLevel: 'info',
   })

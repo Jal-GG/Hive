@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/native-abi.mjs node && vitest run",
     "check": "npm run build && npm test",
     "build:desktop": "node scripts/build-desktop.mjs && vite build",
-    "desktop": "npm run build:desktop && electron ."
+    "desktop": "npm run build:desktop && node scripts/native-abi.mjs electron && electron ."
   },
   "main": "dist/desktop/main.cjs",
   "dependencies": {
@@ -17,6 +17,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.5",
     "@types/react": "^18.3.31",

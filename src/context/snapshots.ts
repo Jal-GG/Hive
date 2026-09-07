@@ -4,16 +4,16 @@ import {
   ContextSnapshotEntry,
   ContextSnapshotManifest,
   ScopeRef,
-} from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { Ledger } from '../../ledger.js'
-import { assertCapability } from '../../identity/capabilities.js'
-import { createResourceUri, validateScopeName } from '../../scope/resource-uri.js'
-import { Clock } from '../../shared/clock.js'
-import { createId } from '../../shared/ids.js'
-import { ContextGitRepository } from '../git/context-git-repository.js'
-import { ContextMarkdownCodec } from '../markdown/context-markdown-codec.js'
-import { ContextFileStore } from '../storage/context-file-store.js'
+} from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { Ledger } from '../ledger.js'
+import { assertCapability } from '../capabilities.js'
+import { createResourceUri, validateScopeName } from '../resource-uri.js'
+import { Clock } from '../shared.js'
+import { createId } from '../shared.js'
+import { ContextGitRepository } from './git-repository.js'
+import { ContextMarkdownCodec } from './markdown-codec.js'
+import { ContextFileStore } from './file-store.js'
 
 const snapshotRefPrefix = 'context/'
 

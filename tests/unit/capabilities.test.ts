@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assertCapability } from '../../src/identity/capabilities.js'
+import { assertCapability } from '../../src/capabilities.js'
 
 describe('capability policy', () => {
   it('rejects an actor that lacks the required capability', () => {

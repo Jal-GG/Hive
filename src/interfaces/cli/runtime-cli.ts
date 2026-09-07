@@ -6,14 +6,14 @@ import {
   RuntimeBrowser,
   runtimeBrowseHelp,
   runtimeBrowseOperations,
-} from '../../runtime/browsing/runtime-browser.js'
+} from '../../runtime/runtime-browser.js'
 import {
   RuntimeControlOperation,
   RuntimeControlRequest,
   RuntimeController,
   runtimeControlHelp,
   runtimeControlOperations,
-} from '../../runtime/control/runtime-controller.js'
+} from '../../runtime/runtime-controller.js'
 
 const browseSet = new Set<string>(runtimeBrowseOperations)
 const controlSet = new Set<string>(runtimeControlOperations)

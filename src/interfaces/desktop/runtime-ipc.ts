@@ -4,13 +4,13 @@ import {
   RuntimeBrowseRequest,
   RuntimeBrowser,
   runtimeBrowseOperations,
-} from '../../runtime/browsing/runtime-browser.js'
+} from '../../runtime/runtime-browser.js'
 import {
   RuntimeControlOperation,
   RuntimeControlRequest,
   RuntimeController,
   runtimeControlOperations,
-} from '../../runtime/control/runtime-controller.js'
+} from '../../runtime/runtime-controller.js'
 import { RunManager } from '../../runtime/run-manager.js'
 import { Unsubscribe } from '../../runtime/runtime-adapter.js'
 

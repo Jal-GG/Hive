@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createBackup } from '../../src/backup.js'
 import { EventEnvelope } from '../../src/contracts.js'
-import { schemaVersion } from '../../src/infrastructure/sqlite/migrations.js'
+import { schemaVersion } from '../../src/sqlite-migrations.js'
 import { Ledger } from '../../src/ledger.js'
 import { ledgerWithActors, tempDirectory, testActor } from '../fixtures.js'
 

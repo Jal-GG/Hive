@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { HiveError } from '../../errors.js'
+import { HiveError } from '../errors.js'
 
 /** Injected so the kill path can be asserted without ending real processes. */
 export interface ProcessControl {

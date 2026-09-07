@@ -1,8 +1,8 @@
 import { copyFileSync } from 'node:fs'
 import { HiveError } from './errors.js'
 import { Ledger } from './ledger.js'
-import { ensureParentDirectory } from './shared/fs.js'
-import { schemaVersion } from './infrastructure/sqlite/migrations.js'
+import { ensureParentDirectory } from './shared.js'
+import { schemaVersion } from './sqlite-migrations.js'
 
 export interface BackupManifest {
   version: 1

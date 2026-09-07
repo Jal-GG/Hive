@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Run, WorktreeCleanupDecision, WorktreeRef, WorktreeStatus, terminalRunStates } from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { Clock, ClockOptions, resolveClock } from '../../shared/clock.js'
-import { GitRunner } from '../../shared/git.js'
+import { Run, WorktreeCleanupDecision, WorktreeRef, WorktreeStatus, terminalRunStates } from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { Clock, ClockOptions, resolveClock } from '../shared.js'
+import { GitRunner } from '../git.js'
 
 /** Local-only ignore entry, so Hive's worktrees never appear as untracked noise in the operator's `git status`. */
 const excludeEntry = '/.hive/'

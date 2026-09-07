@@ -1,10 +1,10 @@
 import { constants } from 'node:os'
-import { RuntimeBackend, RuntimeCapability, RuntimeExit, RuntimeHeartbeat, RuntimeStatus } from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { Clock, ClockOptions, resolveClock } from '../../shared/clock.js'
-import { buildCommand } from '../provider-catalog.js'
-import { KillOptions, RuntimeAdapter, RuntimeSession, RuntimeSpawnRequest, Unsubscribe } from '../runtime-adapter.js'
-import { SessionOutput } from '../runtime-session-support.js'
+import { RuntimeBackend, RuntimeCapability, RuntimeExit, RuntimeHeartbeat, RuntimeStatus } from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { Clock, ClockOptions, resolveClock } from '../shared.js'
+import { buildCommand } from './provider-catalog.js'
+import { KillOptions, RuntimeAdapter, RuntimeSession, RuntimeSpawnRequest, Unsubscribe } from './runtime-adapter.js'
+import { SessionOutput } from './runtime-session-support.js'
 import { killProcessTree, ProcessControl, systemProcessControl } from './process-tree.js'
 
 /**

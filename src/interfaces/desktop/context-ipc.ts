@@ -4,7 +4,7 @@ import {
   ContextBrowseRequest,
   ContextBrowser,
   contextBrowseOperations,
-} from '../../context/browsing/context-browser.js'
+} from '../../context/browser.js'
 
 export const contextIpcPrefix = 'hive:context:'
 

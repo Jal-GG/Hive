@@ -1,5 +1,5 @@
 import { ActorContext, EventEnvelope, ScopeRef } from '../contracts.js'
-import { createId } from '../shared/ids.js'
+import { createId } from '../shared.js'
 
 /** Marks events Hive itself produced, so a filesystem watcher does not replay them as external edits. */
 export const contextOriginMarker = 'hive:context'

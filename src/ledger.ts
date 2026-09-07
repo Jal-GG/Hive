@@ -18,11 +18,11 @@ import {
   terminalRunStates,
 } from './contracts.js'
 import { HiveError } from './errors.js'
-import { SqliteDatabase } from './infrastructure/sqlite/sqlite-database.js'
-import { createId } from './shared/ids.js'
-import { Clock, ClockOptions, resolveClock } from './shared/clock.js'
-import { assertCapability } from './identity/capabilities.js'
-import { validateScopeName } from './scope/resource-uri.js'
+import { SqliteDatabase } from './sqlite-database.js'
+import { createId } from './shared.js'
+import { Clock, ClockOptions, resolveClock } from './shared.js'
+import { assertCapability } from './capabilities.js'
+import { validateScopeName } from './resource-uri.js'
 
 export type LedgerOptions = ClockOptions
 

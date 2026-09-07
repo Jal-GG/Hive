@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { HiveError } from '../errors.js'
+import { HiveError } from './errors.js'
 
 /**
  * Commits Hive makes are attributed to Hive, never to whoever's shell happens to

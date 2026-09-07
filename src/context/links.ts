@@ -1,7 +1,7 @@
 import { ContextLinkRef, ScopeRef } from '../contracts.js'
 import { HiveError } from '../errors.js'
-import { createResourceUri, isSameScope, parseResourceUri, resourceUriFromParts } from '../scope/resource-uri.js'
-import { assertNamespacedPath } from './context-namespace.js'
+import { createResourceUri, isSameScope, parseResourceUri, resourceUriFromParts } from '../resource-uri.js'
+import { assertNamespacedPath } from './namespace.js'
 
 /**
  * Validates the outbound links of one node and classifies each one.

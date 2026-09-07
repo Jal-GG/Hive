@@ -1,9 +1,9 @@
-import { ActorContext, ResultEnvelope, ScopeRef } from '../../contracts.js'
-import { ContextFilesystem } from '../../context-filesystem.js'
-import { HiveError, asResult } from '../../errors.js'
-import { Ledger } from '../../ledger.js'
-import { parseResourceUri } from '../../scope/resource-uri.js'
-import { createId } from '../../shared/ids.js'
+import { ActorContext, ResultEnvelope, ScopeRef } from '../contracts.js'
+import { ContextFilesystem } from './context-filesystem.js'
+import { HiveError, asResult } from '../errors.js'
+import { Ledger } from '../ledger.js'
+import { parseResourceUri } from '../resource-uri.js'
+import { createId } from '../shared.js'
 
 export type ContextBrowseOperation =
   | 'ls'

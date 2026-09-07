@@ -1,9 +1,9 @@
-import { RuntimeBackend, RuntimeCapability, RuntimeExit, RuntimeHeartbeat, RuntimeStatus } from '../../contracts.js'
-import { HiveError } from '../../errors.js'
-import { Clock, ClockOptions, resolveClock } from '../../shared/clock.js'
-import { KillOptions, RuntimeAdapter, RuntimeSession, RuntimeSpawnRequest, Unsubscribe } from '../runtime-adapter.js'
-import { buildCommand } from '../provider-catalog.js'
-import { SessionOutput } from '../runtime-session-support.js'
+import { RuntimeBackend, RuntimeCapability, RuntimeExit, RuntimeHeartbeat, RuntimeStatus } from '../contracts.js'
+import { HiveError } from '../errors.js'
+import { Clock, ClockOptions, resolveClock } from '../shared.js'
+import { KillOptions, RuntimeAdapter, RuntimeSession, RuntimeSpawnRequest, Unsubscribe } from './runtime-adapter.js'
+import { buildCommand } from './provider-catalog.js'
+import { SessionOutput } from './runtime-session-support.js'
 
 /**
  * Sessions keyed by session key, outliving any single adapter instance.

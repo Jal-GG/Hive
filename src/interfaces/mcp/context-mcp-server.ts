@@ -7,7 +7,7 @@ import {
   ContextBrowser,
   contextBrowseHelp,
   contextBrowseOperations,
-} from '../../context/browsing/context-browser.js'
+} from '../../context/browser.js'
 
 const protocolVersion = '2024-11-05'
 const toolPrefix = 'context_'

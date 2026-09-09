@@ -186,6 +186,7 @@ export class RunManager {
       id: runId,
       workItemId: request.workItemId,
       actorId: actor.actorId,
+      agentId: identity.agentId,
       scope,
       runtimeProfile: profile.id,
       backend: profile.backend,

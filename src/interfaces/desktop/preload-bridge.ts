@@ -8,6 +8,9 @@ import {
   runtimeIpcPrefix,
   runtimeStreamChannels,
   runtimeStreamControlChannels,
+  workBrowseOperationNames,
+  workControlOperationNames,
+  workIpcPrefix,
   type Unsubscribe,
 } from './runtime-channels.js'
 
@@ -24,6 +27,8 @@ export interface HiveWindow {
   /** Invoke plus the push streams: what a terminal view model needs. */
   runtime: RuntimeBridge
   context: PreloadBridge
+  /** The task board, mail, handoffs, and packet compilation (§6.2, §6.5). */
+  work: PreloadBridge
   /** Stream control: attach a terminal, follow the event log. */
   stream: {
     attach(runId: string): Promise<ResultEnvelope<unknown>>
@@ -103,6 +108,7 @@ export function createHiveWindow(ipc: IpcRendererLike): HiveWindow {
   const hive: HiveWindow = {
     runtime: runtimeBridge,
     context: invokeOnly(contextIpcPrefix),
+    work: invokeOnly(workIpcPrefix),
     stream: {
       attach: (runId) => streamInvoke(runtimeStreamControlChannels.attach, { runId }),
       detach: (runId) => streamInvoke(runtimeStreamControlChannels.detach, { runId }),
@@ -126,6 +132,8 @@ export function allowedChannels(): string[] {
     ...runtimeBrowseOperationNames.map((operation) => `${runtimeIpcPrefix}${operation}`),
     ...runtimeControlOperationNames.map((operation) => `${runtimeIpcPrefix}${operation}`),
     ...contextBrowseOperationNames.map((operation) => `${contextIpcPrefix}${operation}`),
+    ...workBrowseOperationNames.map((operation) => `${workIpcPrefix}${operation}`),
+    ...workControlOperationNames.map((operation) => `${workIpcPrefix}${operation}`),
     ...Object.values(runtimeStreamControlChannels),
   ].sort()
 }

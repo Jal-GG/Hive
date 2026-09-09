@@ -18,6 +18,14 @@ export const runtimeControlOperationNames: readonly string[] = ['launch', 'write
 
 export const contextBrowseOperationNames: readonly string[] = ['ls', 'tree', 'stat', 'read', 'grep', 'glob', 'find', 'history', 'pack', 'readAt', 'snapshots', 'tombstones']
 
+/** The work-plane operations a renderer may invoke, mirroring the work CLI's task views. */
+export const workBrowseOperationNames: readonly string[] = ['items', 'item', 'plan', 'plan-history', 'handoffs', 'inbox']
+
+export const workControlOperationNames: readonly string[] = ['create', 'claim', 'start', 'status', 'plan-write', 'handoff-accept', 'context']
+
+/** The work namespace's channel prefix, shared by the main and preload sides. */
+export const workIpcPrefix = 'hive:work:'
+
 /**
  * The renderer-safe half of the runtime IPC surface: channel names, request and
  * bridge shapes, and nothing else.

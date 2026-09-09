@@ -1,15 +1,21 @@
 import { join } from 'node:path'
-import { ActorContext, Capability } from '../../contracts.js'
+import { ActorContext, Capability, ScopeRef } from '../../contracts.js'
 import { ContextBrowser } from '../../context/browser.js'
 import { ContextFilesystem } from '../../context/context-filesystem.js'
 import { Ledger } from '../../ledger.js'
 import { createRuntimeHost, RuntimeHost } from '../../runtime/runtime-host.js'
+import { HandoffService } from '../../work/handoffs.js'
+import { MailService } from '../../work/mail.js'
+import { runManagerMailInterrupt } from '../../work/mail-interrupts.js'
+import { PacketCompiler } from '../../work/packet.js'
+import { WorkBoard } from '../../work/board.js'
 import {
   registerContextIpc,
   IpcRegistrar as ContextIpcRegistrar,
 } from './context-ipc.js'
 import { RuntimeIpcRegistrar, WebContentsSender } from './runtime-channels.js'
 import { registerRuntimeIpc, RuntimeStreamBridge } from './runtime-ipc.js'
+import { registerWorkIpc } from './work-ipc.js'
 
 /**
  * What the desktop main process needs before it can show anything: a repo to run
@@ -65,6 +71,8 @@ export interface DesktopHost {
   stream: RuntimeStreamBridge
   /** Read-only context browsing, the same surface the CLI, MCP, and HTTP expose (C4). */
   context: ContextBrowser
+  /** The work plane's default scope: where the desktop's task board lives. */
+  workScope: ScopeRef
   /** Registers every IPC channel on the provided registrar; returns the full channel list. */
   registerIpc(registrar: RuntimeIpcRegistrar & ContextIpcRegistrar): string[]
   /** Re-adopts or retires whatever the last desktop session left behind. */
@@ -84,7 +92,7 @@ export interface DesktopHost {
  */
 export function startDesktopHost(options: DesktopHostOptions, actor: ActorContext = desktopOperator()): DesktopHost {
   const ledger = new Ledger(options.ledgerFile ?? ':memory:')
-  ensureDefaultScope(ledger, 'main', 'hive')
+  const workScope = ensureDefaultScope(ledger, 'main', 'hive')
   const host = createRuntimeHost({
     ledger,
     repoRoot: options.repoRoot,
@@ -95,15 +103,23 @@ export function startDesktopHost(options: DesktopHostOptions, actor: ActorContex
   const filesystem = new ContextFilesystem(options.contextRoot ?? join(options.repoRoot, '.hive', 'context'), ledger)
   const context = new ContextBrowser(filesystem, ledger)
   const stream = new RuntimeStreamBridge({ manager: host.manager, browser: host.browser, actor })
+  const board = new WorkBoard(ledger)
+  // Interrupt mail is wired straight into the live sessions the same host runs:
+  // a message to an agent reaches that agent's terminal without a polling hop.
+  const mail = new MailService(ledger, { interrupt: runManagerMailInterrupt(host.manager, actor) })
+  const handoffs = new HandoffService(ledger)
+  const packets = new PacketCompiler({ ledger, board, mail, handoffs, filesystem })
 
   return {
     host,
     actor,
     stream,
     context,
+    workScope,
     registerIpc: (registrar) => [
       ...registerRuntimeIpc(registrar, { browser: host.browser, controller: host.controller }, actor),
       ...registerContextIpc(registrar, context, actor),
+      ...registerWorkIpc(registrar, { scope: workScope, board, mail, handoffs, packets }, actor),
       ...stream.registerControl(registrar),
     ],
     recover: () => host.recover(actor),
@@ -115,13 +131,14 @@ export function startDesktopHost(options: DesktopHostOptions, actor: ActorContex
   }
 }
 
-/** Idempotent default scope so the roster has something to resolve on first launch. */
-function ensureDefaultScope(ledger: Ledger, workspaceName: string, projectName: string): void {
+/** Idempotent default scope so the roster has something to resolve on first launch; returns the scope either way. */
+function ensureDefaultScope(ledger: Ledger, workspaceName: string, projectName: string): ScopeRef {
   try {
-    ledger.resolveScope(workspaceName, projectName)
+    return ledger.resolveScope(workspaceName, projectName)
   } catch {
     ledger.createActor(desktopOperator())
     const workspaceId = ledger.createWorkspace(workspaceName)
-    ledger.createProject(workspaceId, projectName)
+    const projectId = ledger.createProject(workspaceId, projectName)
+    return { workspaceId, projectId, workspaceName, projectName }
   }
 }

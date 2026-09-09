@@ -346,6 +346,8 @@ export interface Run {
   id: string
   workItemId?: string
   actorId: string
+  /** The agent this run belongs to, when launched for one: how interrupt mail finds its session. */
+  agentId?: string
   scope: ScopeRef
   runtimeProfile: string
   backend: RuntimeBackend

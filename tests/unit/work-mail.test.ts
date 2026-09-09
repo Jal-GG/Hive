@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Capability } from '../../src/contracts.js'
-import { parseAddress, queueForAddress } from '../../src/work/mail.js'
+import { MailService, parseAddress, queueForAddress } from '../../src/work/mail.js'
 import { workHarness, testActor, testAgent } from '../fixtures.js'
 
 const capabilities: Capability[] = ['workspace:read', 'work:dispatch']
@@ -81,12 +81,36 @@ describe('mail', () => {
     harness.close()
   })
 
-  it('delivers an interrupt-mode message at claim time', () => {
+  it('delivers an interrupt through a live-session channel at send time', () => {
     const harness = workHarness([sender, agentB])
-    harness.mail.send(sender, harness.scope, { to: 'agent:agent-b', subject: 'Stop the line', body: 'now', delivery: 'interrupt' })
-    const claimed = harness.mail.claimNext(agentB, 'agent:agent-b')!
-    expect(claimed.state).toBe('delivered')
-    expect(claimed.deliveredAt).toBeDefined()
+    const seen: Array<{ address: string; text: string }> = []
+    const mail = new MailService(harness.ledger, {
+      now: harness.clock.now,
+      interrupt: {
+        deliver: (address, text) => {
+          seen.push({ address, text })
+          return { recipientActorId: agentB.actorId }
+        },
+      },
+    })
+    const message = mail.send(sender, harness.scope, { to: 'agent:agent-b', subject: 'Stop the line', body: 'now', delivery: 'interrupt' })
+    expect(seen).toEqual([{ address: 'agent:agent-b', text: expect.stringContaining('Stop the line') }])
+    expect(message.state).toBe('delivered')
+    expect(message.claimedBy).toBe(agentB.actorId)
+    // The loop closes with the recipient's acknowledgement, straight from delivered.
+    expect(mail.ack(agentB, message.id).state).toBe('acked')
+    harness.close()
+  })
+
+  it('falls an interrupt back to the queue when no session is live', () => {
+    const harness = workHarness([sender, agentB])
+    const mail = new MailService(harness.ledger, { now: harness.clock.now, interrupt: { deliver: () => undefined } })
+    const message = mail.send(sender, harness.scope, { to: 'agent:agent-b', subject: 'Stop the line', body: 'now', delivery: 'interrupt' })
+    expect(message.state).toBe('pending')
+    // The claim cycle is the retry path; claimed from the queue, an interrupt is just a message.
+    const claimed = mail.claimNext(agentB, 'agent:agent-b')!
+    expect(claimed.state).toBe('claimed')
+    expect(mail.ack(agentB, claimed.id).state).toBe('acked')
     harness.close()
   })
 

@@ -56,15 +56,31 @@ export interface SendMessageInput {
 }
 
 /**
+ * How interrupt mail reaches a live session. Returns the recipient's actor id
+ * when a session accepted the write, or undefined when there is no live session
+ * for the address — in which case the message falls back to its queue.
+ */
+export interface MailInterrupt {
+  deliver(address: Address, text: string): { recipientActorId: string } | undefined
+}
+
+export interface MailServiceOptions extends ClockOptions {
+  /** Absent means every interrupt falls back to the queue, which is the honest default for a host with no runtime. */
+  interrupt?: MailInterrupt
+}
+
+/**
  * C13: the closed loop. Mail is claims with acknowledgements, not reads — a
  * message is work to one recipient, delivered queue-style or interrupt-style,
  * with requeue as the fallback when a worker dies mid-claim.
  */
 export class MailService {
   private readonly now: Clock
+  private readonly interrupt?: MailInterrupt
 
-  constructor(private readonly ledger: Ledger, options: ClockOptions = {}) {
+  constructor(private readonly ledger: Ledger, options: MailServiceOptions = {}) {
     this.now = resolveClock(options)
+    this.interrupt = options.interrupt
   }
 
   /** Sending requires `work:dispatch`: mail is how work reaches a recipient. */
@@ -108,6 +124,15 @@ export class MailService {
     this.ledger.appendEvent(workEvent(actor, scope, 'Mail', 'sent', `sent:${message.id}`, occurredAt, {
       id: message.id, to: message.to, queue: message.queue, subject, priority: message.priority, delivery: message.delivery,
     }))
+    // Interrupt delivery is attempted once, at send: the whole point is to
+    // reach a session that is live right now. No session means the message
+    // stays pending in its queue — the retry fallback is the claim cycle.
+    if (message.delivery === 'interrupt' && message.to && this.interrupt) {
+      const delivered = this.interrupt.deliver(message.to, interruptText(message))
+      if (delivered) {
+        return this.recordInterruptDelivery(message, delivered.recipientActorId, actor)
+      }
+    }
     return message
   }
 
@@ -142,22 +167,20 @@ export class MailService {
     this.ledger.appendEvent(workEvent(actor, claimed.scope, 'Mail', 'claimed', `claimed:${claimed.id}:${actor.actorId}`, claimedAt, {
       id: claimed.id, subject: claimed.subject, claimedBy: actor.actorId,
     }))
-    // An interrupt-mode claim is delivered at the moment of claim: its purpose
-    // is to reach a live session, and queue-style delivery would lose that.
-    if (claimed.delivery === 'interrupt') {
-      return this.delivered(claimed, actor)
-    }
     return claimed
   }
 
-  /** Marks a claimed message delivered; only the claimant can record it. */
-  delivered(message: Message, actor: ActorContext): Message {
+  /**
+   * Records that a live session took an interrupt: the recipient's actor is the
+   * claimant from that moment, so the loop closes with their acknowledgement.
+   */
+  private recordInterruptDelivery(message: Message, recipientActorId: string, actor: ActorContext): Message {
     const deliveredAt = this.now().toISOString()
-    const updated = this.ledger.patchMessage(message.id, { state: 'delivered', deliveredAt })
-    this.ledger.appendEvent(workEvent(actor, updated.scope, 'Mail', 'delivered', `delivered:${updated.id}`, deliveredAt, {
-      id: updated.id, subject: updated.subject,
+    const delivered = this.ledger.deliverInterruptMessage(message.id, recipientActorId, deliveredAt)
+    this.ledger.appendEvent(workEvent(actor, delivered.scope, 'Mail', 'delivered', `delivered:${delivered.id}`, deliveredAt, {
+      id: delivered.id, subject: delivered.subject, recipient: recipientActorId, delivery: 'interrupt',
     }))
-    return updated
+    return delivered
   }
 
   /** Acknowledgement closes the loop: only the claimant, from `claimed` or `delivered`. */
@@ -192,4 +215,9 @@ export class MailService {
     }
     return requeued
   }
+}
+
+/** What a session actually sees on its terminal: provenance first, so it reads as mail, not as a prompt. */
+function interruptText(message: Message): string {
+  return `[hive mail from ${message.from}] ${message.subject}\n${message.body}\n`
 }

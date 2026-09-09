@@ -139,6 +139,7 @@ interface RunRow extends ScopeRow {
   id: string
   work_item_id: string | null
   actor_id: string
+  agent_id: string | null
   runtime_profile: string
   backend: Run['backend']
   session_key: string
@@ -178,6 +179,7 @@ function toRun(row: RunRow): Run {
     id: row.id,
     workItemId: row.work_item_id ?? undefined,
     actorId: row.actor_id,
+    agentId: row.agent_id ?? undefined,
     scope: toScope(row),
     runtimeProfile: row.runtime_profile,
     backend: row.backend,
@@ -683,15 +685,16 @@ export class Ledger {
 
   insertRun(run: Run): void {
     this.statement(`INSERT INTO runs
-      (id, work_item_id, actor_id, workspace_id, project_id, runtime_profile, backend, session_key, cwd,
+      (id, work_item_id, actor_id, agent_id, workspace_id, project_id, runtime_profile, backend, session_key, cwd,
        repo_fingerprint, worktree_fingerprint, branch, state, lease_id, started_at, ended_at, exit_code, exit_signal,
        pid, transcript_cursor, imported_event_count, lost_event_count)
-      VALUES (@id, @workItemId, @actorId, @workspaceId, @projectId, @runtimeProfile, @backend, @sessionKey, @cwd,
+      VALUES (@id, @workItemId, @actorId, @agentId, @workspaceId, @projectId, @runtimeProfile, @backend, @sessionKey, @cwd,
        @repoFingerprint, @worktreeFingerprint, @branch, @state, @leaseId, @startedAt, @endedAt, @exitCode, @exitSignal,
        @pid, @transcriptCursor, @importedEventCount, @lostEventCount)`).run({
       id: run.id,
       workItemId: run.workItemId ?? null,
       actorId: run.actorId,
+      agentId: run.agentId ?? null,
       workspaceId: run.scope.workspaceId,
       projectId: run.scope.projectId,
       runtimeProfile: run.runtimeProfile,
@@ -981,9 +984,10 @@ export class Ledger {
     return message
   }
 
-  /** Acknowledgement is ownership: only the claimant, only from `claimed`. */
+  /** Acknowledgement is ownership: only the recorded recipient, from `claimed` or `delivered`. */
   acknowledgeMessage(id: string, actorId: string, ackedAt: string): Message | undefined {
-    const result = this.statement(`UPDATE messages SET state = 'acked', acked_at = ? WHERE id = ? AND state = 'claimed' AND claimed_by = ?`)
+    const result = this.statement(`UPDATE messages SET state = 'acked', acked_at = ?
+      WHERE id = ? AND state IN ('claimed', 'delivered') AND claimed_by = ?`)
       .run(ackedAt, id, actorId)
     return result.changes === 1 ? this.message(id) : undefined
   }
@@ -996,6 +1000,20 @@ export class Ledger {
     const result = this.statement(`UPDATE messages SET state = 'pending', claimed_by = NULL, claimed_at = NULL
       WHERE state = 'claimed' AND claimed_at IS NOT NULL AND claimed_at <= ?`).run(cutoffIso)
     return result.changes
+  }
+
+  /**
+   * An interrupt that reached a live session: delivered in one step, with the
+   * receiving actor recorded as the claimant so their acknowledgement closes
+   * the loop. Guarded on `pending` — a raced claim wins and this returns undefined.
+   */
+  deliverInterruptMessage(id: string, recipientActorId: string, deliveredAt: string): Message {
+    const result = this.statement(`UPDATE messages SET state = 'delivered', claimed_by = ?, claimed_at = ?, delivered_at = ?
+      WHERE id = ? AND state = 'pending'`).run(recipientActorId, deliveredAt, deliveredAt, id)
+    if (result.changes !== 1) throw new HiveError('MESSAGE_STATE', `Message ${id} is no longer pending`)
+    const message = this.message(id)
+    if (!message) throw new HiveError('MESSAGE_NOT_FOUND', `Message ${id} not found`)
+    return message
   }
 
   insertHandoff(handoff: Handoff): void {

@@ -1,4 +1,4 @@
-export const schemaVersion = 5
+export const schemaVersion = 6
 
 export const migrations: Record<number, string> = {
   1: `
@@ -132,5 +132,11 @@ export const migrations: Record<number, string> = {
       updated_at TEXT NOT NULL,
       PRIMARY KEY(work_item_id, revision)
     );
+  `,
+  6: `
+    -- The agent identity a run belongs to (C16): interrupt mail and supervision
+    -- resolve "the live session for agent X" from the run row, not from cwd guessing.
+    ALTER TABLE runs ADD COLUMN agent_id TEXT;
+    CREATE INDEX IF NOT EXISTS runs_agent_idx ON runs(agent_id, state);
   `,
 }

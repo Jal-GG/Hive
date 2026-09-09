@@ -1,0 +1,35 @@
+name: check
+
+# The per-release-OS verification the plan's exit gates call for: the suite runs
+# on all three desktop platforms on every push and pull request, so "verified on
+# Windows only" stops being the steady state.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The node ABI is what the suite needs; the Electron build is a desktop
+      # packaging step, not a test dependency.
+      - run: npm run check
+      # The real-provider gate is opt-in by design: it launches an installed
+      # agent CLI. Run it where one is available by setting HIVE_REAL_PROVIDER
+      # as a repository secret; otherwise the suite above is the verdict.
+      - name: Real provider gate (opt-in)
+        if: ${{ secrets.HIVE_REAL_PROVIDER != '' }}
+        env:
+          HIVE_REAL_PROVIDER: ${{ secrets.HIVE_REAL_PROVIDER }}
+        run: npx vitest run tests/integration/real-provider.test.ts

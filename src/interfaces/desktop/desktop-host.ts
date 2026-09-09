@@ -119,7 +119,7 @@ export function startDesktopHost(options: DesktopHostOptions, actor: ActorContex
     registerIpc: (registrar) => [
       ...registerRuntimeIpc(registrar, { browser: host.browser, controller: host.controller }, actor),
       ...registerContextIpc(registrar, context, actor),
-      ...registerWorkIpc(registrar, { scope: workScope, board, mail, handoffs, packets }, actor),
+      ...registerWorkIpc(registrar, { scope: workScope, board, mail, handoffs, packets, ledger }, actor),
       ...stream.registerControl(registrar),
     ],
     recover: () => host.recover(actor),

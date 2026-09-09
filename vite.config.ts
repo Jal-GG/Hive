@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 /**
  * Renderer build only. The main and preload processes are plain Node-flavoured
@@ -14,7 +15,7 @@ export default defineConfig({
     root: '.',
     include: ['tests/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
   },
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     // Beside the bundled main/preload entries, so one directory is the whole
     // desktop artifact and `loadFile` has a single relative root.

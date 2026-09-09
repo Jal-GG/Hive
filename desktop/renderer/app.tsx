@@ -1,11 +1,14 @@
-import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { AnimatePresence, motion } from 'framer-motion'
+import { Activity, Bot, Hexagon, ListChecks, Plus, Send, Square, Zap } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
+import './app.css'
 import { RuntimeViewModel, type RuntimeViewState } from '../../src/interfaces/desktop/runtime-view-model.js'
 import type { HiveWindow } from '../../src/interfaces/desktop/preload-bridge.js'
-import type { WorkItem, WorkPlanRevision } from '../../src/contracts.js'
+import type { RunState, WorkItemStatus } from '../../src/contracts.js'
 
 declare global {
   interface Window {
@@ -13,36 +16,81 @@ declare global {
   }
 }
 
+/** The work-plane view types the renderer needs; the bridge returns JSON shapes. */
+interface WorkItemView {
+  id: string
+  title: string
+  status: WorkItemStatus
+  assigneeActorId?: string
+}
+interface AgentView {
+  id: string
+  name: string
+  profileId: string
+  skills: string[]
+  energy: number
+  maxEnergy: number
+}
+interface PlanView {
+  revision: number
+  body: string
+  updatedByActorId: string
+}
+
+type Tab = 'runs' | 'tasks' | 'fleet'
+
+const liveRunStates: readonly RunState[] = ['spawning', 'running', 'idle', 'completing']
+const liveWorkStates: readonly WorkItemStatus[] = ['assigned', 'in_progress', 'review']
+
 /**
- * The operator console: a roster of runs, one terminal, one status line, and
- * the task board the runs belong to.
+ * The operator console: fleet, board, and one terminal, in Hive's own skin.
  *
- * The run view model owns every terminal decision — what a roster row shows,
- * when the cursor moves, what an outcome reads as — so this component is layout
- * only. The task panel talks to the work bridge directly: the work plane has no
- * push streams yet, so there is nothing for a view model to subscribe to.
+ * The run view model still owns every terminal decision — this file is layout
+ * and motion only. The work and fleet panels talk to their bridges directly;
+ * they poll while in front because the work plane has no push streams yet.
  */
 function App({ model }: { model: RuntimeViewModel }) {
   const [state, setState] = useState<RuntimeViewState>(() => model.state())
   const [prompt, setPrompt] = useState('')
-  const [tab, setTab] = useState<'runs' | 'tasks'>('runs')
+  const [taskTitle, setTaskTitle] = useState('')
+  const [tab, setTab] = useState<Tab>('runs')
+  const [items, setItems] = useState<WorkItemView[]>([])
+  const [agents, setAgents] = useState<AgentView[]>([])
+  const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined)
+  const [plan, setPlan] = useState<PlanView | null>(null)
+  const [workError, setWorkError] = useState<string | undefined>(undefined)
   const terminalElement = useRef<HTMLDivElement>(null)
   const terminal = useRef<Terminal | undefined>(undefined)
-  const fit = useRef<FitAddon | undefined>(undefined)
 
   useEffect(() => model.subscribe(setState), [model])
 
-  // One xterm, fed by the view model's terminal buffer.
   useEffect(() => {
     const element = terminalElement.current
     if (!element) return
-    const term = new Terminal({ fontSize: 13, cursorBlink: true, convertEol: false })
+    const term = new Terminal({
+      fontSize: 13,
+      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+      cursorBlink: true,
+      convertEol: false,
+      theme: {
+        background: '#0e1118',
+        foreground: '#e6e9f2',
+        cursor: '#f5b942',
+        selectionBackground: '#8b7cf655',
+        black: '#0e1118',
+        green: '#4ade80',
+        yellow: '#f5b942',
+        blue: '#8b7cf6',
+        magenta: '#c4b5fd',
+        cyan: '#86efac',
+        red: '#f87171',
+      },
+    })
     const addon = new FitAddon()
     term.loadAddon(addon)
     term.open(element)
     term.write(state.terminal)
     terminal.current = term
-    fit.current = addon
     const resize = () => addon.fit()
     window.addEventListener('resize', resize)
     return () => {
@@ -50,226 +98,366 @@ function App({ model }: { model: RuntimeViewModel }) {
       term.dispose()
       terminal.current = undefined
     }
-    // The terminal is created once; the buffer is written by the effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Stream the terminal buffer into xterm whenever it changes.
   useEffect(() => {
     terminal.current?.write(state.terminal)
   }, [state.terminal])
 
-  // Keep the roster's selected run attached and the event log followed.
   useEffect(() => {
     void model.refresh()
     void window.hive.stream.follow(state.cursor)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Attach when a run is selected, so its output streams into the terminal.
   useEffect(() => {
     if (state.selectedRunId) void window.hive.stream.attach(state.selectedRunId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.selectedRunId])
 
-  // The pane size follows the terminal size the operator actually has.
   useEffect(() => {
-    if (terminal.current && state.selectedRunId) {
-      void model.resize(terminal.current.cols, terminal.current.rows)
-    }
+    if (terminal.current && state.selectedRunId) void model.resize(terminal.current.cols, terminal.current.rows)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.selectedRunId, state.status?.cols])
 
-  const selected = useMemo(
-    () => state.runs.find((run) => run.id === state.selectedRunId),
-    [state.runs, state.selectedRunId],
-  )
+  const refreshWork = useCallback(async () => {
+    const [itemsResult, agentsResult] = await Promise.all([
+      window.hive.work.invoke('items'),
+      window.hive.work.invoke('agents'),
+    ])
+    if (itemsResult.ok) setItems(itemsResult.data as WorkItemView[])
+    else setWorkError(itemsResult.error.message)
+    if (agentsResult.ok) setAgents(agentsResult.data as AgentView[])
+  }, [])
 
-  const [items, setItems] = useState<WorkItem[]>([])
-  const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined)
-  const [plan, setPlan] = useState<WorkPlanRevision | null>(null)
-  const [taskTitle, setTaskTitle] = useState('')
-  const [workError, setWorkError] = useState<string | undefined>(undefined)
+  const selectTask = useCallback(async (taskId: string) => {
+    setSelectedTaskId(taskId)
+    const result = await window.hive.work.invoke('plan', { workItemId: taskId })
+    setPlan(result.ok ? ((result.data as PlanView | null) ?? null) : null)
+  }, [])
 
-  const refreshTasks = useCallback(async (select?: string) => {
-    const result = await window.hive.work.invoke('items')
-    if (!result.ok) {
-      setWorkError(result.error.message)
-      return
-    }
-    const rows = result.data as WorkItem[]
-    setItems(rows)
-    const next = select ?? selectedTaskId
-    if (next && rows.some((item) => item.id === next)) {
-      setSelectedTaskId(next)
-      const planResult = await window.hive.work.invoke('plan', { workItemId: next })
-      setPlan(planResult.ok ? ((planResult.data as WorkPlanRevision | null) ?? null) : null)
-    } else {
-      setSelectedTaskId(undefined)
-      setPlan(null)
-    }
-  }, [selectedTaskId])
-
+  // The board and fleet poll while their tab is in front: no push streams yet.
   useEffect(() => {
-    if (tab === 'tasks') void refreshTasks()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab])
+    if (tab === 'runs') return
+    void refreshWork()
+    const timer = setInterval(() => void refreshWork(), 2500)
+    return () => clearInterval(timer)
+  }, [tab, refreshWork])
 
   const runWork = useCallback(async (operation: string, payload: Record<string, unknown>) => {
     const result = await window.hive.work.invoke(operation, payload)
     if (!result.ok) {
       setWorkError(result.error.message)
-      return
+      return undefined
     }
     setWorkError(undefined)
     return result.data
   }, [])
 
+  const selected = useMemo(() => state.runs.find((run) => run.id === state.selectedRunId), [state.runs, state.selectedRunId])
   const selectedTask = items.find((item) => item.id === selectedTaskId)
+  const liveRuns = state.runs.filter((run) => liveRunStates.includes(run.state)).length
+  const openTasks = items.filter((item) => item.status === 'open' || item.status === 'blocked').length
+  const inFlight = items.filter((item) => liveWorkStates.includes(item.status)).length
 
   return (
-    <div className="app">
-      <aside className="roster">
-        <h1>Hive</h1>
-        <nav className="tabs">
-          <button className={tab === 'runs' ? 'tab tab-active' : 'tab'} onClick={() => setTab('runs')}>Runs</button>
-          <button className={tab === 'tasks' ? 'tab tab-active' : 'tab'} onClick={() => setTab('tasks')}>Tasks</button>
-        </nav>
+    <div className="flex h-full flex-col">
+      <header className="glass z-10 flex items-center gap-4 border-x-0 border-t-0 px-5 py-3">
+        <div className="flex items-center gap-2.5">
+          <span className="hex-chip flex h-7 w-7 items-center justify-center bg-gradient-to-br from-honey-400 to-honey-600">
+            <Hexagon className="h-4 w-4 text-hive-950" strokeWidth={2.6} />
+          </span>
+          <span className="font-display text-lg font-bold tracking-[0.2em] text-honey-300">HIVE</span>
+        </div>
+        <span className="font-mono text-[11px] uppercase tracking-widest text-hive-500">agent control</span>
+        <div className="ml-auto flex items-center gap-2">
+          <StatChip icon={<Activity className="h-3.5 w-3.5" />} value={liveRuns} label="live" tone="phosphor" />
+          <StatChip icon={<ListChecks className="h-3.5 w-3.5" />} value={openTasks} label="open" tone="orchid" />
+          <StatChip icon={<Zap className="h-3.5 w-3.5" />} value={inFlight} label="in flight" tone="honey" />
+        </div>
+      </header>
 
-        {tab === 'runs' ? (
-          <>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault()
-                void model.launch({
-                  profileId: 'fake',
-                  workspace: 'main',
-                  project: 'hive',
-                  prompt: prompt || undefined,
-                })
-                setPrompt('')
-              }}
-            >
+      <div className="flex min-h-0 flex-1">
+        <aside className="glass z-10 flex w-72 flex-col border-y-0 border-l-0">
+          <nav className="relative flex p-2">
+            {(
+              [
+                { id: 'runs', label: 'Runs', icon: <Activity className="h-3.5 w-3.5" /> },
+                { id: 'tasks', label: 'Tasks', icon: <ListChecks className="h-3.5 w-3.5" /> },
+                { id: 'fleet', label: 'Fleet', icon: <Bot className="h-3.5 w-3.5" /> },
+              ] as const
+            ).map((entry) => (
+              <button
+                key={entry.id}
+                onClick={() => setTab(entry.id)}
+                className={`relative flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 font-display text-[13px] font-medium transition-colors ${
+                  tab === entry.id ? 'text-honey-300' : 'text-hive-500 hover:text-orchid-300'
+                }`}
+              >
+                {tab === entry.id && (
+                  <motion.span
+                    layoutId="tab-pill"
+                    className="glass-soft absolute inset-0 rounded-lg"
+                    transition={{ type: 'spring', stiffness: 500, damping: 40 }}
+                  />
+                )}
+                <span className="relative z-10 flex items-center gap-1.5">
+                  {entry.icon}
+                  {entry.label}
+                </span>
+              </button>
+            ))}
+          </nav>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+            <AnimatePresence mode="wait">
+              {tab === 'runs' && (
+                <motion.div
+                  key="runs"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 8 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex flex-col gap-2"
+                >
+                  <form
+                    className="glass-soft flex flex-col gap-2 rounded-xl p-2.5"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      void model.launch({ profileId: 'fake', workspace: 'main', project: 'hive', prompt: prompt || undefined })
+                      setPrompt('')
+                    }}
+                  >
+                    <input className="field" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="prompt (optional)" />
+                    <button className="btn btn-honey flex items-center justify-center gap-1.5" disabled={state.busy}>
+                      <Plus className="h-4 w-4" /> Launch agent
+                    </button>
+                  </form>
+                  {state.roster.map((row, index) => (
+                    <motion.button
+                      key={row.runId}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: Math.min(index * 0.03, 0.2) }}
+                      onClick={() => void model.select(row.runId)}
+                      className={`glass-soft flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${
+                        row.live ? 'ring-1 ring-orchid-500/60' : 'hover:border-hive-500'
+                      }`}
+                    >
+                      <StatusDot state={row.state} live={row.live} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-mono text-[12px] text-honey-300">{row.short}</span>
+                        <span className="block truncate text-[11px] text-hive-500">{row.profile}{row.outcome ? ` · ${row.outcome}` : ''}</span>
+                      </span>
+                      <span className="font-mono text-[10px] uppercase tracking-wide text-hive-500">{row.state}</span>
+                    </motion.button>
+                  ))}
+                </motion.div>
+              )}
+
+              {tab === 'tasks' && (
+                <motion.div
+                  key="tasks"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 8 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex flex-col gap-2"
+                >
+                  <form
+                    className="glass-soft flex gap-2 rounded-xl p-2.5"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      const title = taskTitle.trim()
+                      if (!title) return
+                      void runWork('create', { title }).then(() => refreshWork())
+                      setTaskTitle('')
+                    }}
+                  >
+                    <input className="field flex-1" value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder="task title" />
+                    <button className="btn btn-honey px-3" title="New task">
+                      <Plus className="h-4 w-4" />
+                    </button>
+                  </form>
+                  {items.map((item) => (
+                    <motion.button
+                      key={item.id}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      onClick={() => void selectTask(item.id)}
+                      className={`glass-soft flex items-center gap-3 rounded-xl px-3 py-2.5 text-left ${
+                        item.id === selectedTaskId ? 'ring-1 ring-honey-500/70' : ''
+                      }`}
+                    >
+                      <TaskStatusChip status={item.status} />
+                      <span className="min-w-0 flex-1 truncate text-[13px]">{item.title}</span>
+                    </motion.button>
+                  ))}
+                  {items.length === 0 && <EmptyHint text="no tasks — the board is clear" />}
+                </motion.div>
+              )}
+
+              {tab === 'fleet' && (
+                <motion.div
+                  key="fleet"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 8 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex flex-col gap-2"
+                >
+                  {agents.map((agent) => (
+                    <motion.div key={agent.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="glass-soft rounded-xl p-3">
+                      <div className="flex items-center gap-2">
+                        <span className="hex-chip flex h-5 w-5 items-center justify-center bg-gradient-to-br from-orchid-400 to-orchid-500">
+                          <Bot className="h-3 w-3 text-hive-950" />
+                        </span>
+                        <span className="font-mono text-[12px] text-orchid-300">{agent.name}</span>
+                        <span className="ml-auto font-mono text-[10px] text-hive-500">{agent.profileId}</span>
+                      </div>
+                      <EnergyMeter energy={agent.energy} maxEnergy={agent.maxEnergy} />
+                      {agent.skills.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {agent.skills.map((skill) => (
+                            <span key={skill} className="rounded-full border border-hive-600 px-2 py-0.5 font-mono text-[10px] text-hive-500">
+                              {skill}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </motion.div>
+                  ))}
+                  {agents.length === 0 && <EmptyHint text="no agents registered — the hive sleeps" />}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+          {workError ? <p className="px-4 pb-3 text-[11px] text-ember-400">{workError}</p> : null}
+          {state.error ? <p className="px-4 pb-3 text-[11px] text-ember-400">{state.error}</p> : null}
+        </aside>
+
+        <main className="flex min-w-0 flex-1 flex-col p-3">
+          <section className="glass flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
+            {tab === 'tasks' && selectedTask ? (
+              <div className="border-b border-hive-700/60 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <TaskStatusChip status={selectedTask.status} />
+                  <span className="font-display text-[15px] font-medium">{selectedTask.title}</span>
+                  <span className="font-mono text-[11px] text-hive-500">{selectedTask.assigneeActorId ?? 'unassigned'}</span>
+                  <div className="ml-auto flex gap-2">
+                    <button className="btn btn-ghost" onClick={() => void runWork('claim', { workItemId: selectedTask.id }).then(() => refreshWork())}>
+                      Claim
+                    </button>
+                    <button className="btn btn-ghost" onClick={() => void runWork('start', { workItemId: selectedTask.id }).then(() => refreshWork())}>
+                      Start
+                    </button>
+                  </div>
+                </div>
+                {plan ? (
+                  <pre className="glass-soft mt-3 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg p-2.5 font-mono text-[11px] text-phosphor-400">
+                    {`plan r${plan.revision} · ${plan.updatedByActorId}\n${plan.body}`}
+                  </pre>
+                ) : (
+                  <p className="mt-2 text-[12px] text-hive-500">no plan written yet</p>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center gap-3 border-b border-hive-700/60 px-4 py-2.5">
+                <span className={`status-dot ${selected ? dotClass(selected.state) : 'status-dot-gone'}`} />
+                <span className="font-mono text-[12px] text-honey-300">{selected ? selected.branch : '—'}</span>
+                <span className="font-mono text-[11px] text-hive-500">{selected ? `${selected.runtimeProfile} · ${selected.state}` : 'select a run'}</span>
+                {selected && (
+                  <button className="btn btn-ghost ml-auto flex items-center gap-1.5" onClick={() => void model.stop({ cleanup: true })}>
+                    <Square className="h-3.5 w-3.5" /> Stop
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="terminal min-h-0 flex-1" ref={terminalElement} />
+          </section>
+
+          <form
+            className="mt-3 flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void model.send(`${prompt}\n`)
+              setPrompt('')
+            }}
+          >
+            <div className="glass flex min-w-0 flex-1 items-center rounded-xl px-3">
               <input
+                className="w-full bg-transparent py-2.5 font-mono text-[13px] outline-none placeholder:text-hive-500"
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
-                placeholder="prompt (optional)"
+                placeholder={selected ? 'type to the agent…' : 'no run selected'}
+                disabled={!selected}
               />
-              <button type="submit" disabled={state.busy}>
-                Launch fake agent
-              </button>
-            </form>
-            <ul>
-              {state.roster.map((row) => (
-                <li key={row.runId} className={row.live ? 'selected' : undefined}>
-                  <button onClick={() => void model.select(row.runId)}>
-                    <span className="short">{row.short}</span>
-                    <span className="profile">{row.profile}</span>
-                    <span className={`state state-${row.state}`}>{row.state}</span>
-                    {row.outcome ? <span className="outcome">{row.outcome}</span> : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : (
-          <>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault()
-                const title = taskTitle.trim()
-                if (!title) return
-                void runWork('create', { title }).then(() => refreshTasks())
-                setTaskTitle('')
-              }}
-            >
-              <input
-                value={taskTitle}
-                onChange={(event) => setTaskTitle(event.target.value)}
-                placeholder="task title"
-              />
-              <button type="submit">New task</button>
-            </form>
-            <ul>
-              {items.map((item) => (
-                <li key={item.id} className={item.id === selectedTaskId ? 'selected' : undefined}>
-                  <button onClick={() => void refreshTasks(item.id)}>
-                    <span className="task-title">{item.title}</span>
-                    <span className={`state state-${item.status}`}>{item.status}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-        {state.error ? <p className="error">{state.error}</p> : null}
-        {workError ? <p className="error">{workError}</p> : null}
-      </aside>
-
-      <main className="console">
-        {tab === 'tasks' && selectedTask ? (
-          <section className="task-detail">
-            <header>
-              <strong>{selectedTask.title}</strong>
-              <span className={`state state-${selectedTask.status}`}>{selectedTask.status}</span>
-              {selectedTask.assigneeActorId ? <span>{selectedTask.assigneeActorId}</span> : <span>unassigned</span>}
-              <button
-                onClick={() =>
-                  void runWork('claim', { workItemId: selectedTask.id }).then(() => refreshTasks(selectedTask.id))
-                }
-              >
-                Claim
-              </button>
-              <button
-                onClick={() =>
-                  void runWork('start', { workItemId: selectedTask.id }).then(() => refreshTasks(selectedTask.id))
-                }
-              >
-                Start
-              </button>
-            </header>
-            {selectedTask.description ? <p>{selectedTask.description}</p> : null}
-            {plan ? (
-              <pre className="plan">
-                {`plan r${plan.revision} by ${plan.updatedByActorId}\n${plan.body}`}
-              </pre>
-            ) : (
-              <p className="muted">no plan written yet</p>
-            )}
-          </section>
-        ) : (
-          <header>
-            {selected ? (
-              <>
-                <strong>{selected.branch}</strong>
-                <span>{selected.runtimeProfile}</span>
-                <span>{selected.state}</span>
-                <button onClick={() => void model.stop({ cleanup: true })}>Stop</button>
-              </>
-            ) : (
-              <span>select a run</span>
-            )}
-          </header>
-        )}
-        <div className="terminal" ref={terminalElement} />
-        <form
-          className="input"
-          onSubmit={(event) => {
-            event.preventDefault()
-            void model.send(`${prompt}\n`)
-            setPrompt('')
-          }}
-        >
-          <input
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder={selected ? 'type to the agent' : 'no run selected'}
-            disabled={!selected}
-          />
-        </form>
-      </main>
+            </div>
+            <button className="btn btn-honey flex items-center gap-1.5 px-4" disabled={!selected}>
+              <Send className="h-4 w-4" />
+            </button>
+          </form>
+        </main>
+      </div>
     </div>
   )
+}
+
+function StatChip({ icon, value, label, tone }: { icon: ReactNode; value: number; label: string; tone: 'phosphor' | 'orchid' | 'honey' }) {
+  const toneClass = { phosphor: 'text-phosphor-400', orchid: 'text-orchid-300', honey: 'text-honey-300' }[tone]
+  return (
+    <span className="glass-soft flex items-center gap-1.5 rounded-full px-3 py-1.5">
+      <span className={toneClass}>{icon}</span>
+      <span className={`font-mono text-[13px] font-bold ${toneClass}`}>{value}</span>
+      <span className="text-[11px] text-hive-500">{label}</span>
+    </span>
+  )
+}
+
+function StatusDot({ state, live }: { state: string; live: boolean }) {
+  return <span className={`status-dot ${dotClass(state, live)}`} />
+}
+
+function dotClass(state: string, live = true): string {
+  if (!live) return 'status-dot-gone'
+  if (state === 'running' || state === 'spawning') return 'status-dot-live'
+  if (state === 'idle' || state === 'stalled') return 'status-dot-idle'
+  if (state === 'escalated') return 'status-dot-escalated'
+  return 'status-dot-done'
+}
+
+function TaskStatusChip({ status }: { status: WorkItemStatus }) {
+  const tone =
+    status === 'in_progress' || status === 'review'
+      ? 'border-honey-600/50 text-honey-300'
+      : status === 'blocked'
+        ? 'border-ember-500/50 text-ember-400'
+        : status === 'open'
+          ? 'border-orchid-500/50 text-orchid-300'
+          : 'border-hive-600 text-hive-500'
+  return <span className={`rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide ${tone}`}>{status.replace('_', ' ')}</span>
+}
+
+function EnergyMeter({ energy, maxEnergy }: { energy: number; maxEnergy: number }) {
+  const cells = Math.max(1, Math.min(maxEnergy, 12))
+  const filled = Math.round((energy / maxEnergy) * cells)
+  return (
+    <div className="mt-2.5 flex items-center gap-2">
+      <div className="flex flex-1 gap-0.5">
+        {Array.from({ length: cells }, (_, index) => (
+          <span key={index} className={`energy-cell ${index < filled ? 'energy-cell-full' : ''}`} />
+        ))}
+      </div>
+      <span className="font-mono text-[10px] text-hive-500">
+        {energy}/{maxEnergy}
+      </span>
+    </div>
+  )
+}
+
+function EmptyHint({ text }: { text: string }) {
+  return <p className="px-3 py-6 text-center font-mono text-[11px] text-hive-500">{text}</p>
 }
 
 const model = new RuntimeViewModel({ bridge: window.hive.runtime })

@@ -115,6 +115,10 @@ app.whenReady().then(async () => {
       if (!claimed?.ok || claimed.data?.item.status !== 'assigned') throw new Error(`work claim failed: ${JSON.stringify(claimed)}`)
       steps.push('task created, listed, and claimed over IPC')
 
+      const fleet = (await page.executeJavaScript('window.hive.work.invoke("agents")')) as { ok: boolean; data?: unknown[] }
+      if (!fleet?.ok || !Array.isArray(fleet.data)) throw new Error(`fleet browse failed: ${JSON.stringify(fleet)}`)
+      steps.push('fleet browsed over IPC')
+
       console.log(`SMOKE OK: ${steps.join('; ')}`)
       desktop.close()
       app.exit(0)

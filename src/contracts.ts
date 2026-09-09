@@ -746,3 +746,92 @@ export interface SessionRecord {
   overview?: string
   capturedAt?: string
 }
+
+// --- Verified merge queue and convoys (§7 Phase 7, C10, C15, C19, C22) ---
+
+export type MergeRequestState =
+  | 'open'
+  | 'preparing'
+  | 'gated'
+  | 'landing'
+  | 'landed'
+  | 'failed'
+  | 'conflicted'
+
+/** States a merge request never leaves: the record of what shipped, or why it did not. */
+export const terminalMergeRequestStates: readonly MergeRequestState[] = ['landed', 'failed', 'conflicted']
+
+/** Every way a merge attempt can die, named — classification drives the reaction (§7 Phase 7). */
+export type MergeFailureKind = 'conflict' | 'gate_failure' | 'infrastructure' | 'push_failure' | 'target_moved'
+
+export interface MergeGateResult {
+  gate: string
+  passed: boolean
+  /** Bounded but inspectable: enough to diagnose, never enough to drown the ledger. */
+  output: string
+}
+
+export interface MergeRequest {
+  id: string
+  scope: ScopeRef
+  workItemId?: string
+  runId?: string
+  sourceBranch: string
+  targetBranch: string
+  /** The target head this request was prepared against; movement invalidates preparation. */
+  targetSha: string
+  batchId?: string
+  state: MergeRequestState
+  failureKind?: MergeFailureKind
+  failureDetail?: string
+  /** Conflicting paths, captured before the merge is aborted. */
+  conflictFiles?: string[]
+  gateResults?: MergeGateResult[]
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+  closedAt?: string
+}
+
+export type MergeBatchState = 'pending' | 'integrating' | 'landed' | 'isolated'
+
+/** A batch is the queue's atomic unit: it lands together or it bisects (§7 Phase 7). */
+export interface MergeBatch {
+  id: string
+  scope: ScopeRef
+  targetBranch: string
+  targetSha: string
+  mergeRequestIds: string[]
+  state: MergeBatchState
+  /** When bisecting, the batch this one is narrowing down. */
+  isolationOf?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type ConvoyState = 'active' | 'closed' | 'forced'
+
+/**
+ * A convoy is a group of work items that must land together. Closure is a
+ * guarded transition — it happens exactly once, no matter how many scanners
+ * race to be the one that noticed.
+ */
+export interface ConvoyRecord {
+  id: string
+  scope: ScopeRef
+  state: ConvoyState
+  closedBy?: string
+  closedAt?: string
+  createdAt: string
+}
+
+/** What one convoy scan found and did. */
+export interface ConvoyScanReport {
+  scanned: number
+  /** Convoys closed by this scan (a convoy closed by a concurrent scan counts zero here). */
+  closed: number
+  /** Items dispatched because their convoy unblocked them. */
+  dispatched: number
+  /** Items blocked behind work that can no longer proceed. */
+  stranded: number
+}

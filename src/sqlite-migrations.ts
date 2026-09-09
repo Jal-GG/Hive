@@ -1,4 +1,4 @@
-export const schemaVersion = 8
+export const schemaVersion = 9
 
 export const migrations: Record<number, string> = {
   1: `
@@ -199,5 +199,53 @@ export const migrations: Record<number, string> = {
       captured_at TEXT
     );
     CREATE INDEX IF NOT EXISTS sessions_scope_idx ON sessions(workspace_id, project_id, started_at);
+  `,
+  9: `
+    -- Phase 7: the verified merge queue. Terminal states are immutable — a
+    -- landed request is a record of what shipped, not a row to be edited.
+    CREATE TABLE IF NOT EXISTS merge_requests (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      work_item_id TEXT,
+      run_id TEXT,
+      source_branch TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      target_sha TEXT NOT NULL,
+      batch_id TEXT,
+      state TEXT NOT NULL,
+      failure_kind TEXT,
+      failure_detail TEXT,
+      conflict_files TEXT,
+      gate_results TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      closed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS merge_requests_state_idx ON merge_requests(workspace_id, project_id, state, created_at);
+    CREATE TABLE IF NOT EXISTS merge_batches (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      target_sha TEXT NOT NULL,
+      merge_request_ids TEXT NOT NULL,
+      state TEXT NOT NULL,
+      isolation_of TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    -- A convoy is the WorkItem grouping that must land together; closure is a
+    -- guarded transition so it happens exactly once no matter who scans.
+    CREATE TABLE IF NOT EXISTS convoys (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      closed_by TEXT,
+      closed_at TEXT,
+      created_at TEXT NOT NULL
+    );
   `,
 }

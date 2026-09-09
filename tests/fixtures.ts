@@ -16,6 +16,8 @@ import { GitWorktreeManager } from '../src/runtime/worktree-manager.js'
 import { createResourceUri } from '../src/resource-uri.js'
 import { Clock } from '../src/shared.js'
 import { GitRunner, gitIdentityArgs } from '../src/git.js'
+import { Dispatcher } from '../src/dispatch/dispatcher.js'
+import { Supervisor } from '../src/dispatch/supervisor.js'
 import { HandoffService } from '../src/work/handoffs.js'
 import { MailService } from '../src/work/mail.js'
 import { PacketCompiler } from '../src/work/packet.js'
@@ -246,4 +248,31 @@ export function workHarness(actors: ActorContext[]): WorkHarness {
   const handoffs = new HandoffService(ledger, { now: clock.now })
   const packets = new PacketCompiler({ ledger, board, mail, handoffs, filesystem: fs }, { now: clock.now })
   return { ledger, scope, fs, board, mail, handoffs, packets, clock, close: () => ledger.close() }
+}
+
+export interface DispatchHarness extends RuntimeHarness {
+  board: WorkBoard
+  mail: MailService
+  handoffs: HandoffService
+  packets: PacketCompiler
+  dispatcher: Dispatcher
+  supervisor: Supervisor
+  fs: ContextFilesystem
+}
+
+/**
+ * The whole Phase 5 plane over one runtime harness: the work services, the
+ * dispatcher, and the supervisor, all sharing the runtime's ledger, clock, and
+ * fake backend. Persistent by default because dispatch tests restart things.
+ */
+export function dispatchHarness(actors: ActorContext[], options: RuntimeHarnessOptions = {}): DispatchHarness {
+  const runtime = runtimeHarness(actors, { persistent: true, ...options })
+  const fs = new ContextFilesystem(tempDirectory('dispatch-context'), runtime.ledger)
+  const board = new WorkBoard(runtime.ledger, { now: runtime.clock.now })
+  const mail = new MailService(runtime.ledger, { now: runtime.clock.now })
+  const handoffs = new HandoffService(runtime.ledger, { now: runtime.clock.now })
+  const packets = new PacketCompiler({ ledger: runtime.ledger, board, mail, handoffs, filesystem: fs }, { now: runtime.clock.now })
+  const dispatcher = new Dispatcher(runtime.ledger, board, packets, runtime.manager, { scope: runtime.scope, now: runtime.clock.now })
+  const supervisor = new Supervisor({ ledger: runtime.ledger, board, mail, manager: runtime.manager, scope: runtime.scope, now: runtime.clock.now })
+  return { ...runtime, board, mail, handoffs, packets, dispatcher, supervisor, fs }
 }

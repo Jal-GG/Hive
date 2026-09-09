@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import {
   ActorContext,
+  Agent,
   AgentProfile,
   ContextIndexEntry,
   ContextKind,
@@ -387,6 +388,32 @@ function toLease(row: LeaseRow): Lease {
   return {
     id: row.id, resourceType: row.resource_type, resourceId: row.resource_id, ownerActorId: row.owner_actor_id,
     fencingToken: row.fencing_token, acquiredAt: row.acquired_at, expiresAt: row.expires_at, state: row.state,
+  }
+}
+
+interface AgentRow {
+  id: string
+  name: string
+  profile_id: string
+  cwd: string | null
+  skills: string
+  energy: number
+  max_energy: number
+  created_at: string
+  updated_at: string
+}
+
+function toAgent(row: AgentRow): Agent {
+  return {
+    id: row.id,
+    name: row.name,
+    profileId: row.profile_id,
+    cwd: row.cwd ?? undefined,
+    skills: JSON.parse(row.skills) as string[],
+    energy: row.energy,
+    maxEnergy: row.max_energy,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   }
 }
 
@@ -824,6 +851,12 @@ export class Ledger {
     return row ? toWorkItem(row) : undefined
   }
 
+  /** A trigger's work item, if it already produced one: the dedupe point for trigger routing. */
+  workItemByTrigger(sourceTriggerId: string): WorkItem | undefined {
+    const row = this.statement(`${WORK_ITEM_COLUMNS} AND i.source_trigger_id = ? ORDER BY i.created_at LIMIT 1`).get(sourceTriggerId) as WorkItemRow | undefined
+    return row ? toWorkItem(row) : undefined
+  }
+
   listWorkItems(scope?: ScopeRef, statuses?: readonly WorkItemStatus[], assigneeActorId?: string): WorkItem[] {
     const clauses: string[] = []
     const values: unknown[] = []
@@ -1125,6 +1158,74 @@ export class Ledger {
   cancelLeaseForResource(resourceType: Lease['resourceType'], resourceId: string): void {
     this.statement(`UPDATE leases SET state = 'cancelled' WHERE resource_type = ? AND resource_id = ? AND state = 'active'`)
       .run(resourceType, resourceId)
+  }
+
+  // --- Fleet, dispatch, and supervision (§6.2, §7 Phase 5) ---
+
+  /** Registers or re-registers an agent; re-registration updates the fleet row, not the energy. */
+  upsertAgent(agent: Agent): void {
+    this.statement(`INSERT INTO agents (id, name, profile_id, cwd, skills, energy, max_energy, created_at, updated_at)
+      VALUES (@id, @name, @profileId, @cwd, @skills, @energy, @maxEnergy, @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, profile_id = excluded.profile_id, cwd = excluded.cwd,
+        skills = excluded.skills, max_energy = excluded.max_energy, updated_at = excluded.updated_at`).run({
+      id: agent.id,
+      name: agent.name,
+      profileId: agent.profileId,
+      cwd: agent.cwd ?? null,
+      skills: JSON.stringify(agent.skills),
+      energy: agent.energy,
+      maxEnergy: agent.maxEnergy,
+      createdAt: agent.createdAt,
+      updatedAt: agent.updatedAt,
+    })
+  }
+
+  agent(agentId: string): Agent | undefined {
+    const row = this.statement('SELECT * FROM agents WHERE id = ?').get(agentId) as AgentRow | undefined
+    return row ? toAgent(row) : undefined
+  }
+
+  listAgents(): Agent[] {
+    return (this.statement('SELECT * FROM agents ORDER BY id').all() as AgentRow[]).map(toAgent)
+  }
+
+  /** Energy is the dispatcher's to spend and the rest tick's to restore; nothing else writes it. */
+  setAgentEnergy(agentId: string, energy: number, updatedAt: string): void {
+    const result = this.statement('UPDATE agents SET energy = ?, updated_at = ? WHERE id = ?').run(energy, updatedAt, agentId)
+    if (result.changes !== 1) throw new HiveError('AGENT_NOT_FOUND', `Agent ${agentId} not found`)
+  }
+
+  /**
+   * Creates the actor row a dispatch acts through, if it is not there already.
+   * A registered agent is dispatched as an actor of its own, so claims and runs
+   * name the agent rather than whoever happened to be dispatching.
+   */
+  ensureActor(actor: ActorContext): void {
+    this.statement(`INSERT INTO actors (id, type, display_name, source, capabilities, workspace_id, project_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING`).run(
+      actor.actorId,
+      actor.actorType,
+      actor.displayName,
+      actor.source,
+      JSON.stringify(actor.capabilities),
+      actor.workspaceId ?? null,
+      actor.projectId ?? null,
+      this.timestamp(),
+    )
+  }
+
+  /** Where a projection got to: the durable cursor a restarted supervisor resumes from. */
+  projectionCursor(projection: string): number {
+    const row = this.statement('SELECT version FROM projection_status WHERE projection = ?').get(projection) as { version: number } | undefined
+    return row?.version ?? 0
+  }
+
+  /** Advances a projection cursor; never backwards — a late reader must not unsee events. */
+  setProjectionCursor(projection: string, sequence: number): void {
+    this.statement(`INSERT INTO projection_status (projection, version, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(projection) DO UPDATE SET version = MAX(version, excluded.version), updated_at = excluded.updated_at`)
+      .run(projection, sequence, this.timestamp())
   }
 
   private requireWorkItem(id: string): WorkItem {

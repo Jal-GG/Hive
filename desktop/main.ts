@@ -106,6 +106,15 @@ app.whenReady().then(async () => {
       if (stopped.data?.run.state !== 'done') throw new Error(`stopped run is ${stopped.data?.run.state}, expected done`)
       steps.push('run stopped with real exit status')
 
+      const created = (await page.executeJavaScript('window.hive.work.invoke("create", { title: "smoke task" })')) as { ok: boolean; data?: { id: string; status: string } }
+      if (!created?.ok) throw new Error(`work create failed: ${JSON.stringify(created)}`)
+      if (created.data?.status !== 'open') throw new Error(`created task is ${created.data?.status}, expected open`)
+      const items = (await page.executeJavaScript('window.hive.work.invoke("items")')) as { ok: boolean; data?: { id: string }[] }
+      if (!items?.ok || !items.data?.some((item) => item.id === created.data!.id)) throw new Error('created task missing from the board')
+      const claimed = (await page.executeJavaScript(`window.hive.work.invoke("claim", { workItemId: ${JSON.stringify(created.data!.id)} })`)) as { ok: boolean; data?: { item: { status: string } } }
+      if (!claimed?.ok || claimed.data?.item.status !== 'assigned') throw new Error(`work claim failed: ${JSON.stringify(claimed)}`)
+      steps.push('task created, listed, and claimed over IPC')
+
       console.log(`SMOKE OK: ${steps.join('; ')}`)
       desktop.close()
       app.exit(0)

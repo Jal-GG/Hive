@@ -26,6 +26,33 @@ html, body, .app {
   letter-spacing: 0.08em;
 }
 
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid #262a32;
+  border-radius: 6px;
+  background: none;
+  color: #8b919c;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.tab-active {
+  border-color: #3b82f6;
+  color: #dbeafe;
+}
+
+.task-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .roster form {
   display: flex;
   flex-direction: column;
@@ -87,6 +114,39 @@ html, body, .app {
   color: #dbeafe;
   cursor: pointer;
 }
+
+.console header button + button {
+  margin-left: 8px;
+}
+
+.task-detail {
+  border-bottom: 1px solid #262a32;
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.task-detail header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  border: none;
+  padding: 0;
+}
+
+.task-detail .plan {
+  background: #1d2027;
+  border: 1px solid #262a32;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.muted { color: #8b919c; }
 
 .terminal {
   flex: 1;

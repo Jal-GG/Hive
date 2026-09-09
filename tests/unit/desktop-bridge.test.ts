@@ -206,6 +206,33 @@ describe('preload bridge', () => {
     expect(actor.capabilities).toContain('runtime:control')
     expect(actor.capabilities).toContain('runtime:read')
     expect(actor.capabilities).toContain('context:read')
+    expect(actor.capabilities).toContain('work:mutate')
+    expect(actor.capabilities).toContain('work:dispatch')
+  })
+
+  it('serves the task board over the work channels, like a renderer', async () => {
+    const repoRoot = gitRepository('desktop-work-board')
+    const desktop = startDesktopHost({ repoRoot, hostEnv: {} })
+    const main = new IpcMainRecorder()
+    desktop.registerIpc(main)
+
+    const created = ok(await main.invoke('hive:work:create', { title: 'Desktop task', description: 'from the renderer' })) as { id: string; status: string }
+    expect(created.status).toBe('open')
+
+    const listed = ok(await main.invoke('hive:work:items')) as { id: string }[]
+    expect(listed.some((item) => item.id === created.id)).toBe(true)
+
+    const claimed = ok(await main.invoke('hive:work:claim', { workItemId: created.id })) as { item: { status: string; assigneeActorId: string } }
+    expect(claimed.item.status).toBe('assigned')
+    expect(claimed.item.assigneeActorId).toBe(desktop.actor.actorId)
+
+    const compiled = ok(await main.invoke('hive:work:context', { taskId: created.id })) as { packet: { task: { title: string } }; prompt: string }
+    expect(compiled.packet.task.title).toBe('Desktop task')
+    expect(compiled.prompt).toContain('[Hive context packet]')
+
+    const missing = await main.invoke('hive:work:item', { workItemId: 'no-such-task' })
+    expect(failure(missing).code).toBe('WORK_ITEM_NOT_FOUND')
+    desktop.close()
   })
 })
 

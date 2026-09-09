@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.native-abi/
 *.db
 *.db-shm
 *.db-wal

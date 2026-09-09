@@ -1,0 +1,113 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, .app {
+  height: 100%;
+  font-family: system-ui, sans-serif;
+  background: #16181d;
+  color: #d7dae0;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+}
+
+.roster {
+  border-right: 1px solid #262a32;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.roster h1 {
+  font-size: 18px;
+  letter-spacing: 0.08em;
+}
+
+.roster form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.roster ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.roster li button {
+  display: grid;
+  grid-template-columns: 64px 1fr auto auto;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.roster li button:hover { background: #1d2027; }
+.roster li.selected button { border-color: #3b82f6; }
+
+.state { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: #262a32; }
+.state-running { color: #4ade80; }
+.state-idle { color: #facc15; }
+.state-done { color: #93c5fd; }
+.state-zombie { color: #f87171; }
+.outcome { color: #8b919c; font-size: 11px; }
+
+.console {
+  display: flex;
+  flex-direction: column;
+}
+
+.console header {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid #262a32;
+  font-size: 13px;
+}
+
+.console header button {
+  margin-left: auto;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid #3b82f6;
+  background: #1d2b45;
+  color: #dbeafe;
+  cursor: pointer;
+}
+
+.terminal {
+  flex: 1;
+  padding: 8px;
+  min-height: 0;
+}
+
+.input {
+  border-top: 1px solid #262a32;
+  padding: 8px 16px;
+  display: flex;
+}
+
+.input input {
+  flex: 1;
+  background: #1d2027;
+  border: 1px solid #262a32;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: inherit;
+  font-family: ui-monospace, monospace;
+}
+
+.error { color: #f87171; font-size: 12px; }

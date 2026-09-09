@@ -10,10 +10,17 @@ import {
   ContextSnapshotManifest,
   ContextTombstone,
   EventEnvelope,
+  Handoff,
   Lease,
+  Message,
+  MessageState,
   Run,
   RunState,
   ScopeRef,
+  WorkDependency,
+  WorkItem,
+  WorkItemStatus,
+  WorkPlanRevision,
   WorktreeRef,
   terminalRunStates,
 } from './contracts.js'
@@ -213,6 +220,196 @@ function toTombstone(row: TombstoneRow): ContextTombstone {
     uri: row.uri, path: row.path, scope: toScope(row), version: row.version, sha256: row.sha256,
     deletedAt: row.deleted_at, deletedBy: row.deleted_by, commit: row.commit_hash ?? undefined,
   }
+}
+
+// --- Work plane rows (§6.2, §6.4, §6.5): names joined back like every other scope-carrying row ---
+
+/** Work items store scope ids; names are joined back so every row carries a complete `ScopeRef`. */
+const WORK_ITEM_COLUMNS = `SELECT i.*, w.name AS workspace_name, p.name AS project_name
+  FROM work_items i
+  JOIN workspaces w ON w.id = i.workspace_id
+  JOIN projects p ON p.id = i.project_id
+  WHERE 1 = 1`
+
+const MESSAGE_COLUMNS = `SELECT m.*, w.name AS workspace_name, p.name AS project_name
+  FROM messages m
+  JOIN workspaces w ON w.id = m.workspace_id
+  JOIN projects p ON p.id = m.project_id
+  WHERE 1 = 1`
+
+const HANDOFF_COLUMNS = `SELECT h.*, w.name AS workspace_name, p.name AS project_name
+  FROM handoffs h
+  JOIN workspaces w ON w.id = h.workspace_id
+  JOIN projects p ON p.id = h.project_id
+  WHERE 1 = 1`
+
+interface WorkItemRow extends ScopeRow {
+  id: string
+  title: string
+  description: string
+  status: WorkItemStatus
+  priority: number
+  issue_type: WorkItem['issueType']
+  owner_actor_id: string
+  assignee_actor_id: string | null
+  convoy_id: string | null
+  source_trigger_id: string | null
+  metadata: string
+  revision: number
+  created_at: string
+  updated_at: string
+  closed_at: string | null
+}
+
+interface DependencyRow {
+  work_item_id: string
+  depends_on_id: string
+  type: WorkDependency['type']
+}
+
+interface MessageRow extends ScopeRow {
+  id: string
+  from_address: string
+  to_address: string | null
+  queue: string | null
+  subject: string
+  body: string
+  type: Message['type']
+  priority: Message['priority']
+  delivery: Message['delivery']
+  thread_id: string | null
+  reply_to: string | null
+  state: MessageState
+  claimed_by: string | null
+  claimed_at: string | null
+  created_at: string
+  delivered_at: string | null
+  acked_at: string | null
+}
+
+interface HandoffRow extends ScopeRow {
+  id: string
+  from_actor: string
+  to_agent: string | null
+  cwd: string
+  summary: string
+  open_questions: string
+  files_touched: string
+  next_steps: string
+  state: Handoff['state']
+  owner_actor: string | null
+  accepted_by: string | null
+  created_at: string
+  accepted_at: string | null
+}
+
+interface LeaseRow {
+  id: string
+  resource_type: Lease['resourceType']
+  resource_id: string
+  owner_actor_id: string
+  fencing_token: number
+  acquired_at: string
+  expires_at: string
+  state: Lease['state']
+}
+
+function toWorkItem(row: WorkItemRow): WorkItem {
+  return {
+    id: row.id,
+    scope: toScope(row),
+    title: row.title,
+    description: row.description,
+    status: row.status,
+    priority: row.priority,
+    issueType: row.issue_type,
+    ownerActorId: row.owner_actor_id,
+    assigneeActorId: row.assignee_actor_id ?? undefined,
+    convoyId: row.convoy_id ?? undefined,
+    sourceTriggerId: row.source_trigger_id ?? undefined,
+    metadata: JSON.parse(row.metadata) as Record<string, unknown>,
+    revision: row.revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    closedAt: row.closed_at ?? undefined,
+  }
+}
+
+function toDependency(row: DependencyRow): WorkDependency {
+  return { workItemId: row.work_item_id, dependsOnId: row.depends_on_id, type: row.type }
+}
+
+function toMessage(row: MessageRow): Message {
+  return {
+    id: row.id,
+    scope: toScope(row),
+    from: row.from_address,
+    to: row.to_address ?? undefined,
+    queue: row.queue ?? undefined,
+    subject: row.subject,
+    body: row.body,
+    type: row.type,
+    priority: row.priority,
+    delivery: row.delivery,
+    threadId: row.thread_id ?? undefined,
+    replyTo: row.reply_to ?? undefined,
+    state: row.state,
+    claimedBy: row.claimed_by ?? undefined,
+    claimedAt: row.claimed_at ?? undefined,
+    createdAt: row.created_at,
+    deliveredAt: row.delivered_at ?? undefined,
+    ackedAt: row.acked_at ?? undefined,
+  }
+}
+
+function toHandoff(row: HandoffRow): Handoff {
+  return {
+    id: row.id,
+    scope: toScope(row),
+    fromActorId: row.from_actor,
+    toAgentId: row.to_agent ?? undefined,
+    cwd: row.cwd,
+    summary: row.summary,
+    openQuestions: JSON.parse(row.open_questions) as string[],
+    filesTouched: JSON.parse(row.files_touched) as string[],
+    nextSteps: JSON.parse(row.next_steps) as string[],
+    state: row.state,
+    ownerActorId: row.owner_actor ?? undefined,
+    acceptedByActorId: row.accepted_by ?? undefined,
+    createdAt: row.created_at,
+    acceptedAt: row.accepted_at ?? undefined,
+  }
+}
+
+function toLease(row: LeaseRow): Lease {
+  return {
+    id: row.id, resourceType: row.resource_type, resourceId: row.resource_id, ownerActorId: row.owner_actor_id,
+    fencingToken: row.fencing_token, acquiredAt: row.acquired_at, expiresAt: row.expires_at, state: row.state,
+  }
+}
+
+/** Fields of a work item that may change after create. Everything else is fixed at creation. */
+export interface WorkItemPatch {
+  status?: WorkItemStatus
+  assigneeActorId?: string | null
+  closedAt?: string | null
+}
+
+const workItemPatchColumns: Record<keyof WorkItemPatch, string> = {
+  status: 'status',
+  assigneeActorId: 'assignee_actor_id',
+  closedAt: 'closed_at',
+}
+
+/** The one message state change a sender can cause: an interrupt that reached a live session. */
+export interface MessagePatch {
+  state: MessageState
+  deliveredAt?: string
+}
+
+const messagePatchColumns: Record<keyof MessagePatch, string> = {
+  state: 'state',
+  deliveredAt: 'delivered_at',
 }
 
 export class Ledger {
@@ -589,6 +786,333 @@ export class Ledger {
 
   removeWorktree(runId: string): void {
     this.statement('DELETE FROM run_worktrees WHERE run_id = ?').run(runId)
+  }
+
+  // --- Work plane (§6.2, §6.4, §6.5): one work identity in one ledger (C8) ---
+
+  insertWorkItem(item: WorkItem): void {
+    this.statement(`INSERT INTO work_items
+      (id, workspace_id, project_id, title, description, status, priority, issue_type, owner_actor_id, assignee_actor_id,
+       convoy_id, source_trigger_id, metadata, revision, created_at, updated_at, closed_at)
+      VALUES (@id, @workspaceId, @projectId, @title, @description, @status, @priority, @issueType, @ownerActorId, @assigneeActorId,
+       @convoyId, @sourceTriggerId, @metadata, @revision, @createdAt, @updatedAt, @closedAt)`).run({
+      id: item.id,
+      workspaceId: item.scope.workspaceId,
+      projectId: item.scope.projectId,
+      title: item.title,
+      description: item.description,
+      status: item.status,
+      priority: item.priority,
+      issueType: item.issueType,
+      ownerActorId: item.ownerActorId,
+      assigneeActorId: item.assigneeActorId ?? null,
+      convoyId: item.convoyId ?? null,
+      sourceTriggerId: item.sourceTriggerId ?? null,
+      metadata: JSON.stringify(item.metadata),
+      revision: item.revision,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      closedAt: item.closedAt ?? null,
+    })
+  }
+
+  workItem(id: string): WorkItem | undefined {
+    const row = this.statement(`${WORK_ITEM_COLUMNS} AND i.id = ?`).get(id) as WorkItemRow | undefined
+    return row ? toWorkItem(row) : undefined
+  }
+
+  listWorkItems(scope?: ScopeRef, statuses?: readonly WorkItemStatus[], assigneeActorId?: string): WorkItem[] {
+    const clauses: string[] = []
+    const values: unknown[] = []
+    if (scope) {
+      clauses.push('i.workspace_id = ? AND i.project_id = ?')
+      values.push(scope.workspaceId, scope.projectId)
+    }
+    if (statuses && statuses.length > 0) {
+      clauses.push(`i.status IN (${statuses.map(() => '?').join(', ')})`)
+      values.push(...statuses)
+    }
+    if (assigneeActorId) {
+      clauses.push('i.assignee_actor_id = ?')
+      values.push(assigneeActorId)
+    }
+    const where = clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : ''
+    const rows = this.statement(`${WORK_ITEM_COLUMNS}${where} ORDER BY i.created_at DESC, i.id`).all(...values) as WorkItemRow[]
+    return rows.map(toWorkItem)
+  }
+
+  /**
+   * Patches only the fields present and bumps the revision, so every applied
+   * mutation has a number event keys can cite. Column names come from a fixed
+   * table rather than the patch's keys, so no caller can name a column.
+   */
+  patchWorkItem(id: string, patch: WorkItemPatch): WorkItem {
+    const assignments: string[] = ['revision = revision + 1', 'updated_at = ?']
+    const values: unknown[] = [this.timestamp()]
+    for (const [field, column] of Object.entries(workItemPatchColumns) as [keyof WorkItemPatch, string][]) {
+      const value = patch[field]
+      if (value === undefined) continue
+      assignments.push(`${column} = ?`)
+      values.push(value)
+    }
+    const result = this.statement(`UPDATE work_items SET ${assignments.join(', ')} WHERE id = ?`).run(...values, id)
+    if (result.changes !== 1) throw new HiveError('WORK_ITEM_NOT_FOUND', `Work item ${id} not found`)
+    return this.requireWorkItem(id)
+  }
+
+  /**
+   * The claim itself: an open item to any claimant, or an already-assigned item
+   * to its assignee. Guarded on current status, so two simultaneous claims
+   * cannot both land — the loser gets `undefined` and reads why.
+   */
+  claimWorkItem(id: string, assigneeActorId: string, updatedAt: string): WorkItem | undefined {
+    const result = this.statement(`UPDATE work_items SET status = 'assigned', assignee_actor_id = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND (status = 'open' OR (status = 'assigned' AND assignee_actor_id = ?))`).run(assigneeActorId, updatedAt, id, assigneeActorId)
+    return result.changes === 1 ? this.workItem(id) : undefined
+  }
+
+  insertDependency(dependency: WorkDependency): void {
+    this.statement('INSERT INTO work_dependencies (work_item_id, depends_on_id, type) VALUES (?, ?, ?)').run(
+      dependency.workItemId, dependency.dependsOnId, dependency.type,
+    )
+  }
+
+  listDependencies(workItemId: string): WorkDependency[] {
+    const rows = this.statement('SELECT * FROM work_dependencies WHERE work_item_id = ?').all(workItemId) as DependencyRow[]
+    return rows.map(toDependency)
+  }
+
+  /** The reverse edge: items that named this one, for unblocking when it completes. */
+  listDependents(workItemId: string): WorkDependency[] {
+    const rows = this.statement('SELECT * FROM work_dependencies WHERE depends_on_id = ?').all(workItemId) as DependencyRow[]
+    return rows.map(toDependency)
+  }
+
+  insertMessage(message: Message): void {
+    this.statement(`INSERT INTO messages
+      (id, workspace_id, project_id, from_address, to_address, queue, subject, body, type, priority, delivery,
+       thread_id, reply_to, state, claimed_by, claimed_at, created_at, delivered_at, acked_at)
+      VALUES (@id, @workspaceId, @projectId, @from, @to, @queue, @subject, @body, @type, @priority, @delivery,
+       @threadId, @replyTo, @state, @claimedBy, @claimedAt, @createdAt, @deliveredAt, @ackedAt)`).run({
+      id: message.id,
+      workspaceId: message.scope.workspaceId,
+      projectId: message.scope.projectId,
+      from: message.from,
+      to: message.to ?? null,
+      queue: message.queue ?? null,
+      subject: message.subject,
+      body: message.body,
+      type: message.type,
+      priority: message.priority,
+      delivery: message.delivery,
+      threadId: message.threadId ?? null,
+      replyTo: message.replyTo ?? null,
+      state: message.state,
+      claimedBy: message.claimedBy ?? null,
+      claimedAt: message.claimedAt ?? null,
+      createdAt: message.createdAt,
+      deliveredAt: message.deliveredAt ?? null,
+      ackedAt: message.ackedAt ?? null,
+    })
+  }
+
+  message(id: string): Message | undefined {
+    const row = this.statement(`${MESSAGE_COLUMNS} AND m.id = ?`).get(id) as MessageRow | undefined
+    return row ? toMessage(row) : undefined
+  }
+
+  listMessages(filter: { scope?: ScopeRef; queue?: string; to?: string; threadId?: string; states?: readonly MessageState[] }): Message[] {
+    const clauses: string[] = []
+    const values: unknown[] = []
+    if (filter.scope) {
+      clauses.push('m.workspace_id = ? AND m.project_id = ?')
+      values.push(filter.scope.workspaceId, filter.scope.projectId)
+    }
+    if (filter.queue) {
+      clauses.push('m.queue = ?')
+      values.push(filter.queue)
+    }
+    if (filter.to) {
+      clauses.push('m.to_address = ?')
+      values.push(filter.to)
+    }
+    if (filter.threadId) {
+      clauses.push('m.thread_id = ?')
+      values.push(filter.threadId)
+    }
+    if (filter.states && filter.states.length > 0) {
+      clauses.push(`m.state IN (${filter.states.map(() => '?').join(', ')})`)
+      values.push(...filter.states)
+    }
+    const where = clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : ''
+    const rows = this.statement(`${MESSAGE_COLUMNS}${where} ORDER BY m.created_at DESC, m.id`).all(...values) as MessageRow[]
+    return rows.map(toMessage)
+  }
+
+  /** The next pending message in a queue: urgency first, then age, then id — a total, deterministic order. */
+  nextPendingMessage(queue: string): Message | undefined {
+    const row = this.statement(`${MESSAGE_COLUMNS} AND m.queue = ? AND m.state = 'pending'
+      ORDER BY CASE m.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, m.created_at, m.id
+      LIMIT 1`).get(queue) as MessageRow | undefined
+    return row ? toMessage(row) : undefined
+  }
+
+  /** Claim-before-delivery (§6.4): the guarded update is the whole claim. */
+  claimMessage(id: string, actorId: string, claimedAt: string): Message | undefined {
+    const result = this.statement(`UPDATE messages SET state = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND state = 'pending'`)
+      .run(actorId, claimedAt, id)
+    return result.changes === 1 ? this.message(id) : undefined
+  }
+
+  patchMessage(id: string, patch: MessagePatch): Message {
+    const assignments: string[] = []
+    const values: unknown[] = []
+    for (const [field, column] of Object.entries(messagePatchColumns) as [keyof MessagePatch, string][]) {
+      const value = patch[field]
+      if (value === undefined) continue
+      assignments.push(`${column} = ?`)
+      values.push(value)
+    }
+    if (assignments.length === 0) throw new HiveError('INVALID_ARGUMENT', 'Message patch is empty')
+    const result = this.statement(`UPDATE messages SET ${assignments.join(', ')} WHERE id = ?`).run(...values, id)
+    if (result.changes !== 1) throw new HiveError('MESSAGE_NOT_FOUND', `Message ${id} not found`)
+    const message = this.message(id)
+    if (!message) throw new HiveError('MESSAGE_NOT_FOUND', `Message ${id} not found`)
+    return message
+  }
+
+  /** Acknowledgement is ownership: only the claimant, only from `claimed`. */
+  acknowledgeMessage(id: string, actorId: string, ackedAt: string): Message | undefined {
+    const result = this.statement(`UPDATE messages SET state = 'acked', acked_at = ? WHERE id = ? AND state = 'claimed' AND claimed_by = ?`)
+      .run(ackedAt, id, actorId)
+    return result.changes === 1 ? this.message(id) : undefined
+  }
+
+  /**
+   * The retry fallback (§6.4): claims whose worker vanished return to pending.
+   * Returns how many went back, so the caller can report the recovery.
+   */
+  requeueExpiredClaims(cutoffIso: string): number {
+    const result = this.statement(`UPDATE messages SET state = 'pending', claimed_by = NULL, claimed_at = NULL
+      WHERE state = 'claimed' AND claimed_at IS NOT NULL AND claimed_at <= ?`).run(cutoffIso)
+    return result.changes
+  }
+
+  insertHandoff(handoff: Handoff): void {
+    this.statement(`INSERT INTO handoffs
+      (id, workspace_id, project_id, from_actor, to_agent, cwd, summary, open_questions, files_touched, next_steps,
+       state, owner_actor, accepted_by, created_at, accepted_at)
+      VALUES (@id, @workspaceId, @projectId, @fromActorId, @toAgentId, @cwd, @summary, @openQuestions, @filesTouched, @nextSteps,
+       @state, @ownerActorId, @acceptedByActorId, @createdAt, @acceptedAt)`).run({
+      id: handoff.id,
+      workspaceId: handoff.scope.workspaceId,
+      projectId: handoff.scope.projectId,
+      fromActorId: handoff.fromActorId,
+      toAgentId: handoff.toAgentId ?? null,
+      cwd: handoff.cwd,
+      summary: handoff.summary,
+      openQuestions: JSON.stringify(handoff.openQuestions),
+      filesTouched: JSON.stringify(handoff.filesTouched),
+      nextSteps: JSON.stringify(handoff.nextSteps),
+      state: handoff.state,
+      ownerActorId: handoff.ownerActorId ?? null,
+      acceptedByActorId: handoff.acceptedByActorId ?? null,
+      createdAt: handoff.createdAt,
+      acceptedAt: handoff.acceptedAt ?? null,
+    })
+  }
+
+  handoff(id: string): Handoff | undefined {
+    const row = this.statement(`${HANDOFF_COLUMNS} AND h.id = ?`).get(id) as HandoffRow | undefined
+    return row ? toHandoff(row) : undefined
+  }
+
+  listHandoffs(scope?: ScopeRef, states?: readonly Handoff['state'][]): Handoff[] {
+    const clauses: string[] = []
+    const values: unknown[] = []
+    if (scope) {
+      clauses.push('h.workspace_id = ? AND h.project_id = ?')
+      values.push(scope.workspaceId, scope.projectId)
+    }
+    if (states && states.length > 0) {
+      clauses.push(`h.state IN (${states.map(() => '?').join(', ')})`)
+      values.push(...states)
+    }
+    const where = clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : ''
+    const rows = this.statement(`${HANDOFF_COLUMNS}${where} ORDER BY h.created_at, h.id`).all(...values) as HandoffRow[]
+    return rows.map(toHandoff)
+  }
+
+  /** Acceptance is the claim: guarded on `open`, so two sessions cannot both take a handoff. */
+  acceptHandoff(id: string, ownerActorId: string, acceptedByActorId: string, acceptedAt: string): Handoff | undefined {
+    const result = this.statement(`UPDATE handoffs SET state = 'accepted', owner_actor = ?, accepted_by = ?, accepted_at = ?
+      WHERE id = ? AND state = 'open'`).run(ownerActorId, acceptedByActorId, acceptedAt, id)
+    return result.changes === 1 ? this.handoff(id) : undefined
+  }
+
+  cancelHandoff(id: string, fromActorId: string): Handoff | undefined {
+    const result = this.statement(`UPDATE handoffs SET state = 'cancelled' WHERE id = ? AND state = 'open' AND from_actor = ?`)
+      .run(id, fromActorId)
+    return result.changes === 1 ? this.handoff(id) : undefined
+  }
+
+  expireHandoffs(cutoffIso: string): number {
+    const result = this.statement(`UPDATE handoffs SET state = 'expired' WHERE state = 'open' AND created_at <= ?`).run(cutoffIso)
+    return result.changes
+  }
+
+  /**
+   * The plan is append-only history under one writer: the current body plus a
+   * history row are written in one transaction, and the revision is the
+   * serialization point.
+   */
+  upsertWorkPlan(workItemId: string, body: string, updatedByActorId: string, updatedAt: string): WorkPlanRevision {
+    return this.sqlite.transaction(() => {
+      const current = this.statement('SELECT revision FROM work_plans WHERE work_item_id = ?').get(workItemId) as { revision: number } | undefined
+      const revision = (current?.revision ?? 0) + 1
+      if (current) {
+        this.statement('UPDATE work_plans SET body = ?, revision = ?, updated_by = ?, updated_at = ? WHERE work_item_id = ?')
+          .run(body, revision, updatedByActorId, updatedAt, workItemId)
+      } else {
+        this.statement('INSERT INTO work_plans (work_item_id, body, revision, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)')
+          .run(workItemId, body, revision, updatedByActorId, updatedAt)
+      }
+      this.statement('INSERT INTO work_plan_history (work_item_id, revision, body, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .run(workItemId, revision, body, updatedByActorId, updatedAt)
+      return { workItemId, revision, body, updatedByActorId, updatedAt }
+    })
+  }
+
+  workPlan(workItemId: string): WorkPlanRevision | undefined {
+    const row = this.statement('SELECT * FROM work_plans WHERE work_item_id = ?').get(workItemId) as
+      | { work_item_id: string; revision: number; body: string; updated_by: string; updated_at: string }
+      | undefined
+    return row ? { workItemId: row.work_item_id, revision: row.revision, body: row.body, updatedByActorId: row.updated_by, updatedAt: row.updated_at } : undefined
+  }
+
+  workPlanHistory(workItemId: string): WorkPlanRevision[] {
+    const rows = this.statement('SELECT * FROM work_plan_history WHERE work_item_id = ? ORDER BY revision').all(workItemId) as
+      Array<{ work_item_id: string; revision: number; body: string; updated_by: string; updated_at: string }>
+    return rows.map((row) => ({ workItemId: row.work_item_id, revision: row.revision, body: row.body, updatedByActorId: row.updated_by, updatedAt: row.updated_at }))
+  }
+
+  /** The lease actually holding a resource right now, if any — expiry checked, not just the flag. */
+  activeLease(resourceType: Lease['resourceType'], resourceId: string): Lease | undefined {
+    const row = this.statement(`SELECT * FROM leases WHERE resource_type = ? AND resource_id = ? AND state = 'active' AND expires_at > ?
+      ORDER BY fencing_token DESC LIMIT 1`).get(resourceType, resourceId, this.timestamp()) as LeaseRow | undefined
+    return row ? toLease(row) : undefined
+  }
+
+  /** Ends whatever lease holds a resource, used when a terminal state makes it moot (C19). */
+  cancelLeaseForResource(resourceType: Lease['resourceType'], resourceId: string): void {
+    this.statement(`UPDATE leases SET state = 'cancelled' WHERE resource_type = ? AND resource_id = ? AND state = 'active'`)
+      .run(resourceType, resourceId)
+  }
+
+  private requireWorkItem(id: string): WorkItem {
+    const item = this.workItem(id)
+    if (!item) throw new HiveError('WORK_ITEM_NOT_FOUND', `Work item ${id} not found`)
+    return item
   }
 
   recordAudit(actorId: string, action: string, details: unknown): void {

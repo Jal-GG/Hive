@@ -428,3 +428,193 @@ export interface RunReconcileReport {
   /** Worktrees left in place because a cleanup gate refused. */
   retainedWorktrees: WorktreeCleanupDecision[]
 }
+
+// --- Work items, dependencies, and convoys (§6.2, C8) ---
+
+export type WorkItemStatus = 'open' | 'blocked' | 'assigned' | 'in_progress' | 'review' | 'merged' | 'done' | 'failed' | 'cancelled'
+
+/** Work item states from which no further transition happens, so the row is final. */
+export const terminalWorkItemStates: readonly WorkItemStatus[] = ['merged', 'done', 'failed', 'cancelled']
+
+/**
+ * The dependency states that release a blocker. Only success unblocks: a failed
+ * dependency is a decision a human or a supervisor has to make, not a condition
+ * the board resolves by itself.
+ */
+export const satisfiedDependencyStates: readonly WorkItemStatus[] = ['done', 'merged']
+
+export type IssueType = 'task' | 'bug' | 'question' | 'escalation' | 'workflow_step'
+
+export interface WorkItem {
+  id: string
+  scope: ScopeRef
+  title: string
+  description: string
+  status: WorkItemStatus
+  priority: number
+  issueType: IssueType
+  /** The actor that created the item; ownership of the record, not of the work. */
+  ownerActorId: string
+  /** The actor that claimed the item or was assigned to it. A claim is a lease, not a label. */
+  assigneeActorId?: string
+  convoyId?: string
+  sourceTriggerId?: string
+  metadata: Record<string, unknown>
+  /** Bumped on every mutation, so event keys stay unique per applied change. */
+  revision: number
+  createdAt: string
+  updatedAt: string
+  closedAt?: string
+}
+
+export type WorkDependencyType = 'blocks' | 'tracks' | 'relates'
+
+export interface WorkDependency {
+  workItemId: string
+  dependsOnId: string
+  type: WorkDependencyType
+}
+
+/** A blackboard revision: append-only history, one writer at a time (C8, C19). */
+export interface WorkPlanRevision {
+  workItemId: string
+  revision: number
+  body: string
+  updatedByActorId: string
+  updatedAt: string
+}
+
+// --- Mail (§6.4, C13) ---
+
+/**
+ * Who a message is for, spelled `kind:id`: `actor:<id>`, `agent:<id>`, or
+ * `queue:<name>`. A string with a parser rather than a union of objects, so an
+ * address is storable, comparable, and addressable from any surface.
+ */
+export type Address = string
+
+export type AddressKind = 'actor' | 'agent' | 'queue'
+export type MessageType = 'task' | 'escalation' | 'notification' | 'reply' | 'handoff' | 'protocol'
+export type MessagePriority = 'low' | 'normal' | 'high' | 'urgent'
+export type DeliveryMode = 'queue' | 'interrupt'
+export type MessageState = 'pending' | 'claimed' | 'delivered' | 'acked' | 'expired'
+
+export interface Message {
+  id: string
+  scope: ScopeRef
+  from: Address
+  to?: Address
+  queue?: string
+  subject: string
+  body: string
+  type: MessageType
+  priority: MessagePriority
+  delivery: DeliveryMode
+  threadId?: string
+  replyTo?: string
+  state: MessageState
+  claimedBy?: string
+  claimedAt?: string
+  createdAt: string
+  deliveredAt?: string
+  ackedAt?: string
+}
+
+export interface MessageSummary {
+  id: string
+  from: Address
+  subject: string
+  priority: MessagePriority
+  snippet: string
+}
+
+/**
+ * The closed protocol vocabulary (§6.4). Handlers elsewhere are idempotent by
+ * message ID and target state; here the set just makes a protocol subject a
+ * validated fact rather than a free-text convention.
+ */
+export const protocolSubjects: readonly string[] = [
+  'POLECAT_DONE', 'MERGE_READY', 'MERGED', 'MERGE_FAILED', 'REWORK_REQUEST', 'RECOVERY_NEEDED', 'HANDOFF',
+]
+
+// --- Handoffs (§6.5) ---
+
+export type HandoffState = 'open' | 'accepted' | 'expired' | 'cancelled'
+
+export interface Handoff {
+  id: string
+  scope: ScopeRef
+  fromActorId: string
+  /** The agent the handoff is offered to; absent means any agent working inside the cwd boundary. */
+  toAgentId?: string
+  /** Directory boundary: the session that accepts must be working inside it. */
+  cwd: string
+  summary: string
+  openQuestions: string[]
+  filesTouched: string[]
+  nextSteps: string[]
+  state: HandoffState
+  /** Who holds the handoff once accepted. */
+  ownerActorId?: string
+  acceptedByActorId?: string
+  createdAt: string
+  acceptedAt?: string
+}
+
+/** A handoff as a receiving agent sees it in a packet: content and acceptance, no lifecycle noise. */
+export interface HandoffView {
+  id: string
+  fromActorId: string
+  cwd: string
+  summary: string
+  openQuestions: string[]
+  filesTouched: string[]
+  nextSteps: string[]
+  acceptedAt: string
+}
+
+// --- Context packet (§6.5, C14) ---
+
+export interface WorkItemSummary {
+  id: string
+  title: string
+  description: string
+  status: WorkItemStatus
+  priority: number
+  assigneeActorId?: string
+}
+
+export interface ContextReference {
+  uri: string
+  kind: ContextKind
+  level: ContextLevel
+  title: string
+  /** Bounded excerpt: the abstract for L0, the overview for L1, a head slice of the body for L2. */
+  excerpt?: string
+}
+
+export interface SkillReference {
+  id: string
+  name: string
+}
+
+/**
+ * C14: the integration boundary between memory and execution. Section order is
+ * fixed, stored content never outranks current instructions, and the whole thing
+ * is bounded by `byteBudget` so a packet is a prompt, not a dump.
+ */
+export interface ContextPacket {
+  version: 1
+  originMarker: string
+  runId?: string
+  task: WorkItemSummary
+  authorityNotice: string
+  handoff?: HandoffView
+  memory: ContextReference[]
+  resources: ContextReference[]
+  skills: SkillReference[]
+  mail: MessageSummary[]
+  operationalWarnings: string[]
+  byteBudget: number
+  generatedAt: string
+}

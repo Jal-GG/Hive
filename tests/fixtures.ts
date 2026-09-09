@@ -16,10 +16,19 @@ import { GitWorktreeManager } from '../src/runtime/worktree-manager.js'
 import { createResourceUri } from '../src/resource-uri.js'
 import { Clock } from '../src/shared.js'
 import { GitRunner, gitIdentityArgs } from '../src/git.js'
+import { HandoffService } from '../src/work/handoffs.js'
+import { MailService } from '../src/work/mail.js'
+import { PacketCompiler } from '../src/work/packet.js'
+import { WorkBoard } from '../src/work/board.js'
 
 /** Builds a CLI actor; tests vary only the id, capabilities, and occasionally the type. */
 export function testActor(actorId: string, capabilities: Capability[], actorType: ActorType = 'operator'): ActorContext {
   return { actorId, actorType, displayName: actorId, source: 'cli', capabilities }
+}
+
+/** An agent actor: the `agentId` is what mail addresses and handoff eligibility resolve against. */
+export function testAgent(agentId: string, capabilities: Capability[], actorId = agentId): ActorContext {
+  return { actorId, actorType: 'agent', displayName: agentId, source: 'cli', capabilities, agentId }
 }
 
 /** A fresh temporary directory, removed with the OS temp dir rather than per test. */
@@ -201,4 +210,40 @@ export function runtimeHarness(actors: ActorContext[], options: RuntimeHarnessOp
       ledger.close()
     },
   }
+}
+
+export interface WorkHarness {
+  ledger: Ledger
+  scope: ScopeRef
+  fs: ContextFilesystem
+  board: WorkBoard
+  mail: MailService
+  handoffs: HandoffService
+  packets: PacketCompiler
+  clock: TestClock
+  close(): void
+}
+
+/**
+ * The work plane over one ledger and one context store: board, mail, handoffs,
+ * and the packet compiler sharing a clock a test can advance. The ledger is
+ * in-memory — a work test never needs restart durability, only determinism.
+ */
+export function workHarness(actors: ActorContext[]): WorkHarness {
+  const clock = testClock()
+  const ledger = new Ledger(':memory:', { now: clock.now })
+  for (const actor of actors) ledger.createActor(actor)
+  const workspaceId = ledger.createWorkspace('main')
+  const scope: ScopeRef = {
+    workspaceId,
+    projectId: ledger.createProject(workspaceId, 'hive'),
+    workspaceName: 'main',
+    projectName: 'hive',
+  }
+  const fs = new ContextFilesystem(tempDirectory('work-context'), ledger)
+  const board = new WorkBoard(ledger, { now: clock.now })
+  const mail = new MailService(ledger, { now: clock.now })
+  const handoffs = new HandoffService(ledger, { now: clock.now })
+  const packets = new PacketCompiler({ ledger, board, mail, handoffs, filesystem: fs }, { now: clock.now })
+  return { ledger, scope, fs, board, mail, handoffs, packets, clock, close: () => ledger.close() }
 }

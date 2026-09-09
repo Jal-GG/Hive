@@ -1,4 +1,4 @@
-export const schemaVersion = 4
+export const schemaVersion = 5
 
 export const migrations: Record<number, string> = {
   1: `
@@ -48,5 +48,89 @@ export const migrations: Record<number, string> = {
     ALTER TABLE events ADD COLUMN run_id TEXT;
     ALTER TABLE events ADD COLUMN work_item_id TEXT;
     CREATE INDEX IF NOT EXISTS events_run_idx ON events(run_id, sequence);
+  `,
+  5: `
+    CREATE TABLE IF NOT EXISTS work_items (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL,
+      priority INTEGER NOT NULL,
+      issue_type TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL REFERENCES actors(id),
+      assignee_actor_id TEXT REFERENCES actors(id),
+      convoy_id TEXT,
+      source_trigger_id TEXT,
+      metadata TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      closed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS work_items_scope_idx ON work_items(workspace_id, project_id, status);
+    CREATE TABLE IF NOT EXISTS work_dependencies (
+      work_item_id TEXT NOT NULL REFERENCES work_items(id),
+      depends_on_id TEXT NOT NULL REFERENCES work_items(id),
+      type TEXT NOT NULL,
+      PRIMARY KEY(work_item_id, depends_on_id)
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      from_address TEXT NOT NULL,
+      to_address TEXT,
+      queue TEXT,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      type TEXT NOT NULL,
+      priority TEXT NOT NULL,
+      delivery TEXT NOT NULL,
+      thread_id TEXT,
+      reply_to TEXT,
+      state TEXT NOT NULL,
+      claimed_by TEXT,
+      claimed_at TEXT,
+      created_at TEXT NOT NULL,
+      delivered_at TEXT,
+      acked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS messages_queue_idx ON messages(queue, state, created_at);
+    CREATE INDEX IF NOT EXISTS messages_thread_idx ON messages(thread_id);
+    CREATE TABLE IF NOT EXISTS handoffs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      from_actor TEXT NOT NULL REFERENCES actors(id),
+      to_agent TEXT,
+      cwd TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      open_questions TEXT NOT NULL,
+      files_touched TEXT NOT NULL,
+      next_steps TEXT NOT NULL,
+      state TEXT NOT NULL,
+      owner_actor TEXT REFERENCES actors(id),
+      accepted_by TEXT REFERENCES actors(id),
+      created_at TEXT NOT NULL,
+      accepted_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS handoffs_state_idx ON handoffs(workspace_id, project_id, state, created_at);
+    CREATE TABLE IF NOT EXISTS work_plans (
+      work_item_id TEXT PRIMARY KEY REFERENCES work_items(id),
+      body TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      updated_by TEXT NOT NULL REFERENCES actors(id),
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS work_plan_history (
+      work_item_id TEXT NOT NULL REFERENCES work_items(id),
+      revision INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      updated_by TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(work_item_id, revision)
+    );
   `,
 }

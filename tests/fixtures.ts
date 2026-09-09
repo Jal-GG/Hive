@@ -18,6 +18,9 @@ import { Clock } from '../src/shared.js'
 import { GitRunner, gitIdentityArgs } from '../src/git.js'
 import { Dispatcher } from '../src/dispatch/dispatcher.js'
 import { Supervisor } from '../src/dispatch/supervisor.js'
+import { IngestionPipeline } from '../src/ingest/pipeline.js'
+import { Searcher } from '../src/search/searcher.js'
+import { SessionStore } from '../src/session/store.js'
 import { HandoffService } from '../src/work/handoffs.js'
 import { MailService } from '../src/work/mail.js'
 import { PacketCompiler } from '../src/work/packet.js'
@@ -275,4 +278,36 @@ export function dispatchHarness(actors: ActorContext[], options: RuntimeHarnessO
   const dispatcher = new Dispatcher(runtime.ledger, board, packets, runtime.manager, { scope: runtime.scope, now: runtime.clock.now })
   const supervisor = new Supervisor({ ledger: runtime.ledger, board, mail, manager: runtime.manager, scope: runtime.scope, now: runtime.clock.now })
   return { ...runtime, board, mail, handoffs, packets, dispatcher, supervisor, fs }
+}
+
+export interface KnowledgeHarness extends WorkHarness {
+  ingest: IngestionPipeline
+  search: Searcher
+  sessions: SessionStore
+  /** The packet compiler with the lexical index wired in, as the desktop and dispatcher would. */
+  searchingPackets: PacketCompiler
+}
+
+/**
+ * The Phase 6 plane over one in-memory ledger: the ingestion pipeline, the
+ * searcher, the session store, and a second packet compiler with search wired
+ * in — the integration the exit gate exercises.
+ */
+export function knowledgeHarness(actors: ActorContext[]): KnowledgeHarness {
+  const harness = workHarness(actors)
+  const ingest = new IngestionPipeline(harness.ledger, { now: harness.clock.now })
+  const search = new Searcher(harness.ledger)
+  const sessions = new SessionStore(harness.ledger, { now: harness.clock.now })
+  const searchingPackets = new PacketCompiler(
+    {
+      ledger: harness.ledger,
+      board: harness.board,
+      mail: harness.mail,
+      handoffs: harness.handoffs,
+      filesystem: harness.fs,
+      search: { search: (actor, scope, query, options) => search.search(actor, scope, query, options) },
+    },
+    { now: harness.clock.now },
+  )
+  return { ...harness, ingest, search, sessions, searchingPackets }
 }

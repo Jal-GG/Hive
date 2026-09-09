@@ -7,6 +7,7 @@ import {
   HandoffView,
   MessageSummary,
   ScopeRef,
+  SearchHit,
   SkillReference,
   WorkItemSummary,
 } from '../contracts.js'
@@ -54,6 +55,8 @@ export interface PacketSources {
   handoffs: HandoffService
   /** Context excerpts come from the canonical store, not from the ledger index alone. */
   filesystem: ContextFilesystem
+  /** When the lexical index is wired in, search hits for the task join the memory section. */
+  search?: { search(actor: ActorContext, scope: ScopeRef, query: string, options?: { tiers?: readonly ContextLevel[]; limit?: number }): SearchHit[] }
 }
 
 /**
@@ -85,10 +88,24 @@ export class PacketCompiler {
     const handoff = this.claimHandoff(actor, scope, input)
     if (handoff) used += roughSize(handoff)
 
-    const { references: memory, dropped: memoryDropped } = this.references(actor, scope, 'memory', used, byteBudget, warnings)
-    used += memory.reduce((total, reference) => total + roughSize(reference), 0)
+    const { references: indexed, dropped: memoryDropped } = this.references(actor, scope, 'memory', used, byteBudget, warnings)
+    used += indexed.reduce((total, reference) => total + roughSize(reference), 0)
     const { references: resources, dropped: resourceDropped } = this.references(actor, scope, 'resource', used, byteBudget, warnings)
     used += resources.reduce((total, reference) => total + roughSize(reference), 0)
+
+    // Search-derived references join the memory section after the store's own:
+    // the task title is the query, tiers stay L0/L1, and the same budget rules.
+    const memory = [...indexed]
+    const search = this.sources.search?.search(actor, scope, task.title, { tiers: ['L0', 'L1'], limit: maxReferencesPerSection }) ?? []
+    for (const hit of search) {
+      if (memory.some((reference) => reference.uri === hit.uri)) continue
+      if (used + roughSize(hit) > byteBudget) {
+        warnings.push(`search hit dropped to fit the ${byteBudget}-byte budget: ${hit.uri}`)
+        continue
+      }
+      used += roughSize(hit)
+      memory.push({ uri: hit.uri, kind: 'memory', level: hit.tier, title: hit.title, excerpt: hit.snippet })
+    }
 
     const skills = input.skills ?? []
     const mail = this.mailSummaries(actor, scope, input.agentId)

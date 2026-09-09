@@ -1,4 +1,4 @@
-export const schemaVersion = 7
+export const schemaVersion = 8
 
 export const migrations: Record<number, string> = {
   1: `
@@ -153,5 +153,51 @@ export const migrations: Record<number, string> = {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+  `,
+  8: `
+    -- Phase 6: what was ingested, from where, and how it was parsed. The FTS
+    -- table is the lexical index; sources are the change-detection truth, so
+    -- the index can be wiped and rebuilt from them at any time (C12).
+    CREATE TABLE IF NOT EXISTS ingest_sources (
+      uri TEXT PRIMARY KEY,
+      path TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      mtime_ms INTEGER NOT NULL,
+      parser TEXT NOT NULL,
+      chunk_count INTEGER NOT NULL,
+      ingested_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ingest_sources_scope_idx ON ingest_sources(workspace_id, project_id);
+    CREATE VIRTUAL TABLE IF NOT EXISTS ingest_chunks USING fts5(
+      uri UNINDEXED,
+      chunk_id UNINDEXED,
+      tier UNINDEXED,
+      title,
+      body,
+      tokenize = 'porter unicode61'
+    );
+    -- One session per run: the durable record of who worked on what, for how
+    -- long, and the deterministic summary that makes it searchable.
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      run_id TEXT,
+      agent_id TEXT,
+      work_item_id TEXT,
+      runtime_profile TEXT,
+      branch TEXT,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      exit_code INTEGER,
+      exit_signal TEXT,
+      summary TEXT,
+      overview TEXT,
+      captured_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS sessions_scope_idx ON sessions(workspace_id, project_id, started_at);
   `,
 }

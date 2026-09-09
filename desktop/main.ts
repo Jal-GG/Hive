@@ -87,9 +87,32 @@ app.whenReady().then(async () => {
     try {
       const steps: string[] = []
       const page = window!.webContents
+      // Renderer errors are smoke failures: a window that loads its bridge but
+      // fails its own scripts is a white screen wearing a green test.
+      const rendererErrors: string[] = []
+      page.on('console-message', (_event, level, message) => {
+        if (level >= 3) rendererErrors.push(message)
+      })
+      page.on('did-fail-load', (_event, code, description, url) => rendererErrors.push(`did-fail-load ${code} ${description} ${url}`))
+
       const hasBridge = await page.executeJavaScript('typeof window.hive === "object" && typeof window.hive.runtime.invoke === "function"')
       if (!hasBridge) throw new Error('window.hive is not exposed by the preload')
       steps.push('preload bridge exposed')
+
+      // The visual check: a rendered root, a dark body, and no dead scripts.
+      const visuals = (await page.executeJavaScript(`(() => {
+        const scripts = [...document.querySelectorAll('script')]
+        return {
+          rootChildren: document.getElementById('root')?.childElementCount ?? -1,
+          bodyBackground: getComputedStyle(document.body).backgroundColor,
+          scripts: scripts.map((script) => ({ src: script.getAttribute('src'), type: script.getAttribute('type') })),
+          links: [...document.querySelectorAll('link')].map((link) => link.getAttribute('href')),
+        }
+      })()`)) as { rootChildren: number; bodyBackground: string; scripts: Array<{ src: string | null; type: string | null }>; links: Array<string | null> }
+      console.log(`[renderer state] ${JSON.stringify(visuals, null, 2)}`)
+      if (visuals.rootChildren < 1) throw new Error(`renderer did not mount: root has ${visuals.rootChildren} children; body is ${visuals.bodyBackground}`)
+      steps.push('renderer mounted with theme applied')
+      if (rendererErrors.length > 0) throw new Error(`renderer console errors: ${rendererErrors.join(' | ')}`)
 
       const profiles = (await page.executeJavaScript('window.hive.runtime.invoke("profiles")')) as { ok: boolean; data?: { id: string }[] }
       if (!profiles?.ok) throw new Error(`profiles invoke failed: ${JSON.stringify(profiles)}`)

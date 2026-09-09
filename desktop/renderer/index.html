@@ -2,7 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <!--
+      Local-first CSP: everything the renderer loads comes from itself. The
+      data: entries are the bundled fonts' inline fallbacks and the app's own
+      SVG textures — not a network hole.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:"
+    />
     <title>Hive</title>
   </head>
   <body>

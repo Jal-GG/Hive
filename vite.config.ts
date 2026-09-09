@@ -9,6 +9,9 @@ import tailwindcss from '@tailwindcss/vite'
  */
 export default defineConfig({
   root: 'desktop/renderer',
+  // Relative asset paths: the renderer loads via file://, where Vite's default
+  // absolute '/assets/...' would resolve to the drive root and never load.
+  base: './',
   // Vitest must keep scanning from the project root; the renderer root is only
   // for the production bundle.
   test: {

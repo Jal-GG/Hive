@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Capability } from '../../src/contracts.js'
+import { Capability, MergeGateResult, MergeRequest } from '../../src/contracts.js'
 import { resetFakeSessions } from '../../src/runtime/fake-backend.js'
 import { fakeProfileId } from '../../src/runtime/provider-catalog.js'
 import { GitRunner } from '../../src/git.js'
 import { runMergeCli } from '../../src/interfaces/cli/merge-cli.js'
+import { mergeIpcHandlers } from '../../src/interfaces/desktop/merge-ipc.js'
+import { mergeIpcPrefix } from '../../src/interfaces/desktop/runtime-channels.js'
+import { allowedChannels } from '../../src/interfaces/desktop/preload-bridge.js'
 import { mergeQueueHarness, tempDirectory, testActor, testAgent } from '../fixtures.js'
 
 /**
@@ -335,6 +338,77 @@ describe('verified merge queue — the Phase 7 gate', () => {
     expect(failure[0].priority).toBe('high')
     // The failed request carries no merge commit: nothing shipped.
     expect(harness.queue.requests(operator, harness.scope, ['failed'])[0].mergeCommit).toBeUndefined()
+    harness.close()
+  })
+
+  it('serves the queue, graph, gate output, conflicts, and recovery to the desktop', async () => {
+    const harness = mergeQueueHarness([operator])
+    harness.branchWithCommit('ui-good', 'ui-good.txt', 'lands\n')
+    harness.branchWithCommit('ui-bad', 'broken.txt', 'fails the gate\n')
+    harness.queue.enqueue(operator, { sourceBranch: 'ui-good', targetBranch: 'main' })
+    harness.queue.enqueue(operator, { sourceBranch: 'ui-bad', targetBranch: 'main' })
+    for (let pass = 0; pass < 5; pass += 1) {
+      if (harness.queue.requests(operator, harness.scope, ['open']).length === 0) break
+      await harness.queue.process(operator)
+    }
+
+    const handlers = mergeIpcHandlers({
+      scope: harness.scope, ledger: harness.ledger, queue: harness.queue, convoys: harness.convoys, configured: true,
+    }, operator)
+    const call = async (operation: string, payload?: unknown) => {
+      const handler = handlers.get(`${mergeIpcPrefix}${operation}`)
+      expect(handler, `no handler for ${operation}`).toBeDefined()
+      const result = await handler!(undefined, payload)
+      if (!result.ok) throw new Error(`${operation} failed: ${result.error.message}`)
+      return result.data
+    }
+
+    // The queue view is the ledger's, not a second opinion.
+    const requests = await call('requests') as MergeRequest[]
+    expect(requests).toHaveLength(2)
+    const failed = requests.find((request) => request.sourceBranch === 'ui-bad')!
+    const landed = requests.find((request) => request.sourceBranch === 'ui-good')!
+    expect(failed.state).toBe('failed')
+    expect(landed.state).toBe('landed')
+
+    // Gate output is inspectable for the branch that failed, and names the cause.
+    const gates = await call('gates', { requestId: failed.id }) as MergeGateResult[]
+    expect(gates.some((gate) => !gate.passed && gate.output.includes('broken.txt'))).toBe(true)
+
+    // The branch graph carries batches with the branches that rode them, and the
+    // isolation link that records the bisect.
+    const graph = await call('graph') as Array<{ targetBranch: string; branches: unknown[]; isolationOf?: string }>
+    expect(graph.length).toBeGreaterThan(0)
+    expect(graph.every((node) => node.targetBranch === 'main')).toBe(true)
+    expect(graph.some((node) => node.isolationOf !== undefined)).toBe(true)
+    expect(graph.flatMap((node) => node.branches).length).toBeGreaterThan(0)
+
+    // Recovery shows what the queue could not finish on its own.
+    const recovery = await call('recovery') as { failed: MergeRequest[]; conflicted: MergeRequest[]; preservedWorktrees: unknown[] }
+    expect(recovery.failed.map((request) => request.sourceBranch)).toEqual(['ui-bad'])
+    expect(recovery.conflicted).toEqual([])
+    expect(await call('conflicts')).toEqual([])
+
+    // Every registered channel is on the preload allowlist, and nothing extra.
+    const allowed = new Set(allowedChannels())
+    for (const channel of handlers.keys()) expect(allowed.has(channel)).toBe(true)
+    harness.close()
+  })
+
+  it('keeps the desktop merge queue read-only when no gates are configured', async () => {
+    const harness = mergeQueueHarness([operator])
+    // An install with no remote or gates: reads work, anything that moves a branch does not.
+    const handlers = mergeIpcHandlers({
+      scope: harness.scope, ledger: harness.ledger, queue: harness.queue, convoys: harness.convoys, configured: false,
+    }, operator)
+    const read = await handlers.get(`${mergeIpcPrefix}requests`)!(undefined, {})
+    expect(read.ok).toBe(true)
+
+    for (const operation of ['process', 'land', 'enqueue', 'approve']) {
+      const refused = await handlers.get(`${mergeIpcPrefix}${operation}`)!(undefined, {})
+      expect(refused.ok).toBe(false)
+      if (!refused.ok) expect(refused.error.code).toBe('MERGE_NOT_CONFIGURED')
+    }
     harness.close()
   })
 

@@ -1699,6 +1699,18 @@ export class Ledger {
     return row ? toMergeBatch(row) : undefined
   }
 
+  /** Every batch in scope, newest last — the queue's own history, and the branch graph's rows. */
+  listMergeBatches(scope: ScopeRef, states?: readonly MergeBatch['state'][]): MergeBatch[] {
+    const values: unknown[] = [scope.workspaceId, scope.projectId]
+    let where = ' AND b.workspace_id = ? AND b.project_id = ?'
+    if (states && states.length > 0) {
+      where += ` AND b.state IN (${states.map(() => '?').join(', ')})`
+      values.push(...states)
+    }
+    const rows = this.statement(`${MERGE_BATCH_COLUMNS}${where} ORDER BY b.created_at, b.id`).all(...values) as (MergeBatchRow & ScopeRow)[]
+    return rows.map(toMergeBatch)
+  }
+
   patchMergeBatch(id: string, patch: { state: MergeBatch['state'] }, updatedAt: string): MergeBatch | undefined {
     const result = this.statement('UPDATE merge_batches SET state = ?, updated_at = ? WHERE id = ?').run(patch.state, updatedAt, id)
     return result.changes === 1 ? this.mergeBatch(id) : undefined

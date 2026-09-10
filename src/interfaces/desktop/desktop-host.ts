@@ -16,6 +16,10 @@ import {
 import { RuntimeIpcRegistrar, WebContentsSender } from './runtime-channels.js'
 import { registerRuntimeIpc, RuntimeStreamBridge } from './runtime-ipc.js'
 import { registerWorkIpc } from './work-ipc.js'
+import { registerMergeIpc } from './merge-ipc.js'
+import { MergeCoordinator } from '../../merge/coordinator.js'
+import { ConvoyService } from '../../merge/convoy.js'
+import { commandGateRunner, GateDefinition } from '../../merge/gates.js'
 
 /**
  * What the desktop main process needs before it can show anything: a repo to run
@@ -32,6 +36,12 @@ export interface DesktopHostOptions {
   /** Root of the Git-backed context store; defaults to `<repoRoot>/.hive/context`. */
   contextRoot?: string
   hostEnv?: Record<string, string | undefined>
+  /**
+   * The merge queue's deployment configuration. Absent means the desktop shows
+   * the queue read-only: an install with no gates must not be able to move a
+   * branch from a button (§7 Phase 7).
+   */
+  merge?: { remote: string; gates: readonly GateDefinition[]; protectedBranches?: readonly string[] }
 }
 
 /**
@@ -110,6 +120,20 @@ export function startDesktopHost(options: DesktopHostOptions, actor: ActorContex
   const mail = new MailService(ledger, { interrupt: runManagerMailInterrupt(host.manager, actor) })
   const handoffs = new HandoffService(ledger)
   const packets = new PacketCompiler({ ledger, board, mail, handoffs, filesystem })
+  // The merge plane is always assembled so its read views work; only the
+  // operations that move a branch depend on the deployment being configured.
+  const queue = new MergeCoordinator({
+    ledger,
+    repoRoot: options.repoRoot,
+    remote: options.merge?.remote ?? 'origin',
+    gates: options.merge?.gates ?? [],
+    runner: commandGateRunner(),
+    scope: workScope,
+    protectedBranches: options.merge?.protectedBranches,
+    mail,
+    board,
+  })
+  const convoys = new ConvoyService({ ledger, board, mail, scope: workScope })
 
   return {
     host,
@@ -121,6 +145,7 @@ export function startDesktopHost(options: DesktopHostOptions, actor: ActorContex
       ...registerRuntimeIpc(registrar, { browser: host.browser, controller: host.controller }, actor),
       ...registerContextIpc(registrar, context, actor),
       ...registerWorkIpc(registrar, { scope: workScope, board, mail, handoffs, packets, ledger }, actor),
+      ...registerMergeIpc(registrar, { scope: workScope, ledger, queue, convoys, configured: options.merge !== undefined }, actor),
       ...stream.registerControl(registrar),
     ],
     recover: () => host.recover(actor),

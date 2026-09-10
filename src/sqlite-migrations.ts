@@ -1,4 +1,4 @@
-export const schemaVersion = 6
+export const schemaVersion = 7
 
 export const migrations: Record<number, string> = {
   1: `
@@ -138,5 +138,20 @@ export const migrations: Record<number, string> = {
     -- resolve "the live session for agent X" from the run row, not from cwd guessing.
     ALTER TABLE runs ADD COLUMN agent_id TEXT;
     CREATE INDEX IF NOT EXISTS runs_agent_idx ON runs(agent_id, state);
+  `,
+  7: `
+    -- The dispatchable fleet (§6.2): what an agent is, what it runs, what it
+    -- knows, and how much it has left. Energy is the dispatcher's load signal.
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      cwd TEXT,
+      skills TEXT NOT NULL,
+      energy INTEGER NOT NULL,
+      max_energy INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `,
 }

@@ -1,173 +1,231 @@
-* { box-sizing: border-box; margin: 0; padding: 0; }
+@import 'tailwindcss';
+@import '@fontsource/space-grotesk/400.css';
+@import '@fontsource/space-grotesk/500.css';
+@import '@fontsource/space-grotesk/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/700.css';
 
-html, body, .app {
-  height: 100%;
-  font-family: system-ui, sans-serif;
-  background: #16181d;
-  color: #d7dae0;
+/*
+ * Hive's look: deep-space glass with honey accents. The palette is deliberately
+ * not a stock theme — dark orchid glass, amber honey, terminal phosphor — so
+ * the app reads as its own instrument, not a template.
+ */
+@theme {
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --color-hive-950: #0a0c11;
+  --color-hive-900: #0e1118;
+  --color-hive-850: #121620;
+  --color-hive-800: #171c28;
+  --color-hive-700: #1f2534;
+  --color-hive-600: #2a3145;
+  --color-hive-500: #3a4360;
+
+  --color-honey-300: #ffd88a;
+  --color-honey-400: #ffc454;
+  --color-honey-500: #f5b942;
+  --color-honey-600: #d99a26;
+
+  --color-orchid-300: #c4b5fd;
+  --color-orchid-400: #a78bfa;
+  --color-orchid-500: #8b7cf6;
+
+  --color-phosphor-400: #86efac;
+  --color-phosphor-500: #4ade80;
+
+  --color-ember-400: #fca5a5;
+  --color-ember-500: #f87171;
 }
 
-.app {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-}
-
-.roster {
-  border-right: 1px solid #262a32;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  overflow-y: auto;
-}
-
-.roster h1 {
-  font-size: 18px;
-  letter-spacing: 0.08em;
-}
-
-.tabs {
-  display: flex;
-  gap: 4px;
-}
-
-.tab {
-  flex: 1;
-  padding: 4px 0;
-  border: 1px solid #262a32;
-  border-radius: 6px;
-  background: none;
-  color: #8b919c;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.tab-active {
-  border-color: #3b82f6;
-  color: #dbeafe;
-}
-
-.task-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.roster form {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.roster ul {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.roster li button {
-  display: grid;
-  grid-template-columns: 64px 1fr auto auto;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.roster li button:hover { background: #1d2027; }
-.roster li.selected button { border-color: #3b82f6; }
-
-.state { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: #262a32; }
-.state-running { color: #4ade80; }
-.state-idle { color: #facc15; }
-.state-done { color: #93c5fd; }
-.state-zombie { color: #f87171; }
-.outcome { color: #8b919c; font-size: 11px; }
-
-.console {
-  display: flex;
-  flex-direction: column;
-}
-
-.console header {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  padding: 10px 16px;
-  border-bottom: 1px solid #262a32;
-  font-size: 13px;
-}
-
-.console header button {
-  margin-left: auto;
-  padding: 4px 12px;
-  border-radius: 6px;
-  border: 1px solid #3b82f6;
-  background: #1d2b45;
-  color: #dbeafe;
-  cursor: pointer;
-}
-
-.console header button + button {
-  margin-left: 8px;
-}
-
-.task-detail {
-  border-bottom: 1px solid #262a32;
-  padding: 10px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.task-detail header {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  border: none;
+* {
+  box-sizing: border-box;
+  margin: 0;
   padding: 0;
 }
 
-.task-detail .plan {
-  background: #1d2027;
-  border: 1px solid #262a32;
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  white-space: pre-wrap;
+html,
+body,
+#root {
+  height: 100%;
 }
 
-.muted { color: #8b919c; }
+body {
+  font-family: var(--font-display);
+  color: #e6e9f2;
+  background-color: var(--color-hive-950);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 70% -10%, rgba(139, 124, 246, 0.14), transparent),
+    radial-gradient(ellipse 60% 40% at 10% 110%, rgba(245, 185, 66, 0.08), transparent),
+    url("data:image/svg+xml,%3Csvg width='56' height='97' viewBox='0 0 56 97' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M28 0l24.25 14v28L28 56 3.75 42V14L28 0zM28 97l24.25-14V55L28 41 3.75 55v28L28 97z' fill='%23171c28' fill-opacity='0.32' fill-rule='evenodd'/%3E%3C/svg%3E");
+  overflow: hidden;
+}
 
-.terminal {
+/* --- shared surfaces --- */
+
+.glass {
+  background: color-mix(in oklab, var(--color-hive-850) 82%, transparent);
+  backdrop-filter: blur(14px);
+  border: 1px solid color-mix(in oklab, var(--color-hive-600) 70%, transparent);
+}
+
+.glass-soft {
+  background: color-mix(in oklab, var(--color-hive-800) 62%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid color-mix(in oklab, var(--color-hive-600) 45%, transparent);
+}
+
+.hex-chip {
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+}
+
+/* --- status language --- */
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  flex: none;
+}
+
+.status-dot-live {
+  background: var(--color-phosphor-500);
+  box-shadow: 0 0 8px var(--color-phosphor-500);
+  animation: breathe 2.2s ease-in-out infinite;
+}
+
+.status-dot-idle {
+  background: var(--color-honey-500);
+  box-shadow: 0 0 6px var(--color-honey-600);
+  animation: breathe 3.5s ease-in-out infinite;
+}
+
+.status-dot-done {
+  background: var(--color-orchid-400);
+}
+
+.status-dot-gone {
+  background: var(--color-hive-500);
+}
+
+.status-dot-escalated {
+  background: var(--color-ember-500);
+  box-shadow: 0 0 8px var(--color-ember-500);
+  animation: breathe 1.1s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* --- energy meters --- */
+
+.energy-cell {
+  height: 8px;
   flex: 1;
-  padding: 8px;
-  min-height: 0;
+  border-radius: 2px;
+  background: var(--color-hive-700);
 }
 
-.input {
-  border-top: 1px solid #262a32;
-  padding: 8px 16px;
-  display: flex;
+.energy-cell-full {
+  background: linear-gradient(180deg, var(--color-honey-300), var(--color-honey-600));
+  box-shadow: 0 0 6px rgba(245, 185, 66, 0.35);
 }
 
-.input input {
-  flex: 1;
-  background: #1d2027;
-  border: 1px solid #262a32;
-  border-radius: 6px;
-  padding: 8px 10px;
+/* --- inputs and buttons --- */
+
+.field {
+  background: color-mix(in oklab, var(--color-hive-900) 80%, transparent);
+  border: 1px solid var(--color-hive-600);
+  border-radius: 8px;
+  padding: 8px 12px;
   color: inherit;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
-.error { color: #f87171; font-size: 12px; }
+.field:focus {
+  border-color: var(--color-orchid-500);
+  box-shadow: 0 0 0 3px rgba(139, 124, 246, 0.18);
+}
+
+.field::placeholder {
+  color: var(--color-hive-500);
+}
+
+.btn {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: transform 120ms ease, box-shadow 150ms ease, background-color 150ms ease;
+}
+
+.btn:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+.btn-honey {
+  background: linear-gradient(135deg, var(--color-honey-400), var(--color-honey-600));
+  color: #241a05;
+  font-weight: 700;
+}
+
+.btn-honey:hover:not(:disabled) {
+  box-shadow: 0 0 18px rgba(245, 185, 66, 0.4);
+}
+
+.btn-ghost {
+  background: color-mix(in oklab, var(--color-hive-800) 70%, transparent);
+  border-color: var(--color-hive-600);
+  color: #c6cbdc;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--color-orchid-500);
+  color: var(--color-orchid-300);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* --- terminal --- */
+
+.terminal .xterm {
+  padding: 10px 12px;
+}
+
+.terminal .xterm-viewport {
+  background-color: transparent !important;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-hive-700);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-hive-500);
+}

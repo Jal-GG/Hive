@@ -620,3 +620,64 @@ export interface ContextPacket {
   byteBudget: number
   generatedAt: string
 }
+
+// --- Agents, dispatch, supervision, and scheduling (§6.2, §7 Phase 5) ---
+
+/** A dispatchable fleet member: an identity with a profile, skills, and energy. */
+export interface Agent {
+  id: string
+  name: string
+  /** The runtime profile the dispatcher launches this agent under. */
+  profileId: string
+  /** Where the agent works; the packet compiler uses it for handoff eligibility. */
+  cwd?: string
+  /** Skill tags; dispatch scores candidates by overlap with the task's needs. */
+  skills: string[]
+  /** Current energy; dispatch prefers higher-energy agents and spends one unit per task. */
+  energy: number
+  maxEnergy: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** Why a dispatch did not launch: every refusal names its gate. */
+export type DispatchRejection =
+  | { reason: 'no_eligible_agent'; candidates: number }
+  | { reason: 'energy_exhausted'; agentId: string }
+  | { reason: 'launch_failed'; agentId: string; error: string }
+
+/** The record of one dispatch attempt: what was routed, to whom, and what happened. */
+export interface DispatchOutcome {
+  taskId: string
+  agent?: Agent
+  runId?: string
+  rejection?: DispatchRejection
+  occurredAt: string
+}
+
+/** What one supervision pass found and did. */
+export interface SupervisionReport {
+  /** Runs seen as live during this pass. */
+  inspected: number
+  /** Runs marked idle: alive, but silent past the profile's threshold. */
+  idled: number
+  /** Runs marked stalled: idle past the stall threshold. */
+  stalled: number
+  /** Runs escalated: stalled past the escalation threshold, or exited with work unfinished. */
+  escalated: number
+  /** POLECAT_DONE reports processed into work item transitions. */
+  completions: number
+  /** The event sequence this pass is caught up to. */
+  cursor: number
+}
+
+/** The weekly digest a scheduled task mails to the operator: counts, not contents. */
+export interface FleetDigest {
+  generatedAt: string
+  liveRuns: number
+  openTasks: number
+  blockedTasks: number
+  inFlightTasks: number
+  completedTasks: number
+  escalations: number
+}

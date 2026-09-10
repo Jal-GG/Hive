@@ -19,7 +19,7 @@ export const runtimeControlOperationNames: readonly string[] = ['launch', 'write
 export const contextBrowseOperationNames: readonly string[] = ['ls', 'tree', 'stat', 'read', 'grep', 'glob', 'find', 'history', 'pack', 'readAt', 'snapshots', 'tombstones']
 
 /** The work-plane operations a renderer may invoke, mirroring the work CLI's task views. */
-export const workBrowseOperationNames: readonly string[] = ['items', 'item', 'plan', 'plan-history', 'handoffs', 'inbox']
+export const workBrowseOperationNames: readonly string[] = ['items', 'item', 'plan', 'plan-history', 'handoffs', 'inbox', 'agents']
 
 export const workControlOperationNames: readonly string[] = ['create', 'claim', 'start', 'status', 'plan-write', 'handoff-accept', 'context']
 

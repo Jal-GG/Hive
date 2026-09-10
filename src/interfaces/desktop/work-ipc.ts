@@ -9,6 +9,7 @@ import {
 } from '../../contracts.js'
 import { asResult, HiveError } from '../../errors.js'
 import { createId } from '../../shared.js'
+import { Ledger } from '../../ledger.js'
 import { HandoffService } from '../../work/handoffs.js'
 import { MailService } from '../../work/mail.js'
 import { PacketCompiler } from '../../work/packet.js'
@@ -28,10 +29,12 @@ export interface WorkIpcSurfaces {
   mail: MailService
   handoffs: HandoffService
   packets: PacketCompiler
+  /** The registered fleet with energy levels, straight from the ledger (§6.2). */
+  ledger: Ledger
 }
 
 export function workIpcHandlers(surfaces: WorkIpcSurfaces, actor: ActorContext): Map<string, RuntimeIpcHandler> {
-  const { scope, board, mail, handoffs, packets } = surfaces
+  const { scope, board, mail, handoffs, packets, ledger } = surfaces
   const handlers = new Map<string, RuntimeIpcHandler>()
   const envelope = <T>(operation: () => T): ResultEnvelope<T> => asResult(createId(), operation)
 
@@ -45,6 +48,7 @@ export function workIpcHandlers(surfaces: WorkIpcSurfaces, actor: ActorContext):
           case 'plan': return board.planOf(actor, required(body, 'workItemId')) ?? null
           case 'plan-history': return board.planHistory(actor, required(body, 'workItemId'))
           case 'handoffs': return handoffs.list(actor, scope, strings(body, 'states') as HandoffState[])
+          case 'agents': return ledger.listAgents()
           case 'inbox': return mail.inbox(actor, {
             scope,
             queue: optional(body, 'queue'),

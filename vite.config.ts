@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 /**
  * Renderer build only. The main and preload processes are plain Node-flavoured
@@ -8,13 +9,16 @@ import react from '@vitejs/plugin-react'
  */
 export default defineConfig({
   root: 'desktop/renderer',
+  // Relative asset paths: the renderer loads via file://, where Vite's default
+  // absolute '/assets/...' would resolve to the drive root and never load.
+  base: './',
   // Vitest must keep scanning from the project root; the renderer root is only
   // for the production bundle.
   test: {
     root: '.',
     include: ['tests/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
   },
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     // Beside the bundled main/preload entries, so one directory is the whole
     // desktop artifact and `loadFile` has a single relative root.

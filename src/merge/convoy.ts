@@ -144,7 +144,9 @@ export class ConvoyService {
   private openRequestsFor(items: readonly WorkItem[]): MergeRequest[] {
     const ids = new Set(items.map((item) => item.id))
     return this.ledger
-      .listMergeRequests(this.scope, ['open', 'preparing', 'gated', 'landing'])
+      // A request held for approval is unfinished work: a convoy that closed
+      // around it would declare a landing that no approver has released.
+      .listMergeRequests(this.scope, ['open', 'awaiting_approval', 'preparing', 'gated', 'landing'])
       .filter((request) => request.workItemId !== undefined && ids.has(request.workItemId))
   }
 

@@ -211,6 +211,9 @@ interface MergeRequestRow extends ScopeRow {
   failure_detail: string | null
   conflict_files: string | null
   gate_results: string | null
+  protected_target: number
+  approved_by: string | null
+  approved_at: string | null
   created_by: string
   created_at: string
   updated_at: string
@@ -251,6 +254,9 @@ function toMergeRequest(row: MergeRequestRow): MergeRequest {
     failureDetail: row.failure_detail ?? undefined,
     conflictFiles: row.conflict_files ? (JSON.parse(row.conflict_files) as string[]) : undefined,
     gateResults: row.gate_results ? (JSON.parse(row.gate_results) as MergeGateResult[]) : undefined,
+    protectedTarget: row.protected_target === 1 ? true : undefined,
+    approvedBy: row.approved_by ?? undefined,
+    approvedAt: row.approved_at ?? undefined,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1559,9 +1565,11 @@ export class Ledger {
   insertMergeRequest(request: MergeRequest): void {
     this.statement(`INSERT INTO merge_requests
       (id, workspace_id, project_id, work_item_id, run_id, source_branch, target_branch, target_sha,
-       batch_id, state, failure_kind, failure_detail, conflict_files, gate_results, created_by, created_at, updated_at, closed_at)
+       batch_id, state, failure_kind, failure_detail, conflict_files, gate_results,
+       protected_target, approved_by, approved_at, created_by, created_at, updated_at, closed_at)
       VALUES (@id, @workspaceId, @projectId, @workItemId, @runId, @sourceBranch, @targetBranch, @targetSha,
-       @batchId, @state, @failureKind, @failureDetail, @conflictFiles, @gateResults, @createdBy, @createdAt, @updatedAt, @closedAt)`).run({
+       @batchId, @state, @failureKind, @failureDetail, @conflictFiles, @gateResults,
+       @protectedTarget, @approvedBy, @approvedAt, @createdBy, @createdAt, @updatedAt, @closedAt)`).run({
       id: request.id,
       workspaceId: request.scope.workspaceId,
       projectId: request.scope.projectId,
@@ -1576,6 +1584,9 @@ export class Ledger {
       failureDetail: request.failureDetail ?? null,
       conflictFiles: request.conflictFiles ? JSON.stringify(request.conflictFiles) : null,
       gateResults: request.gateResults ? JSON.stringify(request.gateResults) : null,
+      protectedTarget: request.protectedTarget ? 1 : 0,
+      approvedBy: request.approvedBy ?? null,
+      approvedAt: request.approvedAt ?? null,
       createdBy: request.createdBy,
       createdAt: request.createdAt,
       updatedAt: request.updatedAt,
@@ -1628,6 +1639,18 @@ export class Ledger {
       id,
       from,
     )
+    return result.changes === 1 ? this.mergeRequest(id) : undefined
+  }
+
+  /**
+   * Releases a request held against a protected target. Guarded on
+   * `awaiting_approval`, so approving twice approves once and the second
+   * approver finds it already released — the recorded approver is whoever
+   * actually opened the gate.
+   */
+  approveMergeRequest(id: string, approvedBy: string, approvedAt: string): MergeRequest | undefined {
+    const result = this.statement(`UPDATE merge_requests SET state = 'open', approved_by = ?, approved_at = ?, updated_at = ?
+      WHERE id = ? AND state = 'awaiting_approval'`).run(approvedBy, approvedAt, approvedAt, id)
     return result.changes === 1 ? this.mergeRequest(id) : undefined
   }
 

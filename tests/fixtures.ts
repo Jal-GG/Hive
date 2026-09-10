@@ -324,6 +324,10 @@ export interface MergeHarness extends DispatchHarness {
   branchWithCommit(branch: string, file: string, content: string): void
   /** Moves the remote's main by one commit, the way another writer would. */
   moveTarget(file: string, content: string): void
+  /** The protected branch on the remote, for the approval-gate tests. */
+  protectedBranch: string
+  /** The head of any branch on the remote right now — proof a push did or did not happen. */
+  remoteHead(branch: string): string
 }
 
 /**
@@ -354,6 +358,10 @@ export function mergeQueueHarness(actors: ActorContext[]): MergeHarness {
 
   const remote = `${tempDirectory('merge-remote')}.git`
   git.run(['clone', '--quiet', '--bare', harness.repoRoot, remote])
+  // A second target on the remote, declared protected below: landing on it
+  // requires an approval, landing on main does not.
+  const protectedBranch = 'release'
+  git.run(['push', '--quiet', remote, `main:${protectedBranch}`])
 
   const queue = new MergeCoordinator({
     ledger: harness.ledger,
@@ -365,6 +373,7 @@ export function mergeQueueHarness(actors: ActorContext[]): MergeHarness {
     ],
     runner: commandGateRunner(),
     scope: harness.scope,
+    protectedBranches: [protectedBranch],
     mail: harness.mail,
     board: harness.board,
     now: harness.clock.now,
@@ -399,5 +408,7 @@ export function mergeQueueHarness(actors: ActorContext[]): MergeHarness {
     git.run(['worktree', 'remove', dir])
   }
 
-  return { ...harness, queue, convoys, remote, branchWithCommit, moveTarget }
+  const remoteHead = (branch: string): string => git.run(['ls-remote', remote, `refs/heads/${branch}`]).split('\t')[0]
+
+  return { ...harness, queue, convoys, remote, branchWithCommit, moveTarget, protectedBranch, remoteHead }
 }

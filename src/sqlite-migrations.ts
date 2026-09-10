@@ -1,4 +1,4 @@
-export const schemaVersion = 9
+export const schemaVersion = 10
 
 export const migrations: Record<number, string> = {
   1: `
@@ -247,5 +247,14 @@ export const migrations: Record<number, string> = {
       closed_at TEXT,
       created_at TEXT NOT NULL
     );
+  `,
+  10: `
+    -- Phase 7 exit gate: a protected target is approval-gated. The request is
+    -- held in 'awaiting_approval' before any integration happens, so nothing is
+    -- merged, gated, or pushed toward a protected branch until an approver
+    -- releases it — and who released it stays on the record.
+    ALTER TABLE merge_requests ADD COLUMN protected_target INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE merge_requests ADD COLUMN approved_by TEXT;
+    ALTER TABLE merge_requests ADD COLUMN approved_at TEXT;
   `,
 }

@@ -11,10 +11,12 @@ import { mergeQueueHarness, tempDirectory, testActor, testAgent } from '../fixtu
 /**
  * The Phase 7 gate: two concurrent fake branches merge through gates; target
  * movement invalidates preparation; failing batches bisect; conflicts produce
- * rework; dirty worktrees remain; a convoy closes exactly once.
+ * rework; dirty worktrees remain; a convoy closes exactly once; and a protected
+ * remote branch does not move until an approver releases it.
  */
 const capabilities: Capability[] = ['workspace:read', 'work:mutate', 'work:dispatch', 'runtime:control', 'runtime:read', 'context:read', 'merge:execute']
-const operator = testActor('operator', capabilities)
+/** The operator may run the queue and release protected targets; the agent may only run the queue. */
+const operator = testActor('operator', [...capabilities, 'merge:approve'])
 const agent = testAgent('worker-1', capabilities)
 
 afterEach(() => resetFakeSessions())
@@ -202,6 +204,80 @@ describe('verified merge queue — the Phase 7 gate', () => {
     natural.close()
   })
 
+  it('holds a protected target until an approver releases it, and never moves it before', async () => {
+    const harness = mergeQueueHarness([operator, agent])
+    harness.branchWithCommit('hotfix', 'hotfix.txt', 'urgent fix\n')
+    const before = harness.remoteHead(harness.protectedBranch)
+
+    // Queued by the agent against the protected branch: held, not opened.
+    const request = harness.queue.enqueue(agent, { sourceBranch: 'hotfix', targetBranch: harness.protectedBranch })
+    expect(request.state).toBe('awaiting_approval')
+    expect(request.protectedTarget).toBe(true)
+
+    // A full pass integrates and lands nothing: the hold is before any git work.
+    const held = await harness.queue.process(operator)
+    expect(held).toMatchObject({ landed: 0, batches: 0, failed: 0, awaitingApproval: 1 })
+    expect(harness.remoteHead(harness.protectedBranch)).toBe(before)
+    expect(harness.queue.requests(operator, harness.scope, ['awaiting_approval'])).toHaveLength(1)
+    // The approver was told, and told how.
+    const notice = harness.mail.inbox(operator, { queue: 'supervisor' }).find((message) => message.subject === 'MERGE_READY')
+    expect(notice?.body).toContain(harness.protectedBranch)
+    expect(notice?.body).toContain(request.id)
+
+    // The agent runs the queue but cannot open the gate it is waiting behind.
+    expect(() => harness.queue.approve(agent, request.id)).toThrowError(/merge:approve/)
+    expect(harness.remoteHead(harness.protectedBranch)).toBe(before)
+
+    // The operator approves: the request opens, carrying who released it.
+    const approved = harness.queue.approve(operator, request.id)
+    expect(approved.state).toBe('open')
+    expect(approved.approvedBy).toBe(operator.actorId)
+    expect(approved.approvedAt).toBeDefined()
+
+    // Only now does it go through the gates and land.
+    const landed = await harness.queue.process(operator)
+    expect(landed).toMatchObject({ landed: 1, awaitingApproval: 0 })
+    expect(harness.remoteHead(harness.protectedBranch)).not.toBe(before)
+    expect(remoteFile(harness, 'hotfix.txt', harness.protectedBranch)).toBe('urgent fix\n')
+    // Approval is spent: the released request cannot be approved again.
+    expect(() => harness.queue.approve(operator, request.id)).toThrowError(/not awaiting approval/)
+    harness.close()
+  })
+
+  it('gates only protected targets, and a held request keeps its convoy open', async () => {
+    const harness = mergeQueueHarness([operator])
+    // An unprotected target is unaffected: protection is opt-in, per branch.
+    harness.branchWithCommit('plain', 'plain.txt', 'no approval needed\n')
+    const plain = harness.queue.enqueue(operator, { sourceBranch: 'plain', targetBranch: 'main' })
+    expect(plain.state).toBe('open')
+    expect(plain.protectedTarget).toBeUndefined()
+
+    // A convoy whose only item is held for approval has not converged, even
+    // though the item itself reached a terminal state.
+    const item = harness.board.create(operator, harness.scope, { title: 'Protected release', convoyId: 'release-3' })
+    harness.convoys.ensure(operator, 'release-3')
+    harness.branchWithCommit('convoy-protected', 'convoy-protected.txt', 'held\n')
+    harness.board.claim(operator, item.id)
+    harness.board.transition(operator, item.id, 'in_progress')
+    harness.board.transition(operator, item.id, 'review')
+    harness.board.transition(operator, item.id, 'merged')
+    const held = harness.queue.enqueue(operator, {
+      sourceBranch: 'convoy-protected', targetBranch: harness.protectedBranch, workItemId: item.id,
+    })
+    expect(held.state).toBe('awaiting_approval')
+
+    const blocked = await harness.convoys.scan(operator)
+    expect(blocked.closed).toBe(0)
+    expect(harness.convoys.convoys(operator, ['active'])).toHaveLength(1)
+
+    // Released and landed, the convoy converges.
+    harness.queue.approve(operator, held.id)
+    await harness.queue.process(operator)
+    const closure = await harness.convoys.scan(operator)
+    expect(closure.closed).toBe(1)
+    harness.close()
+  })
+
   it('serves the queue through the CLI', async () => {
     const harness = mergeQueueHarness([operator])
     harness.branchWithCommit('cli-branch', 'cli.txt', 'from the CLI\n')
@@ -217,15 +293,23 @@ describe('verified merge queue — the Phase 7 gate', () => {
 
     const requests = JSON.parse(await cli(['requests', '--state', 'landed'])) as Array<{ state: string }>
     expect(requests).toHaveLength(1)
+
+    // A protected target is held through the CLI too, and released by approve.
+    harness.branchWithCommit('cli-protected', 'cli-protected.txt', 'needs approval\n')
+    const held = JSON.parse(await cli(['enqueue', '--source', 'cli-protected', '--target', harness.protectedBranch])) as { id: string; state: string }
+    expect(held.state).toBe('awaiting_approval')
+    const released = JSON.parse(await cli(['approve', '--request', held.id])) as { state: string; approvedBy: string }
+    expect(released).toMatchObject({ state: 'open', approvedBy: operator.actorId })
+    await expect(cli(['approve'])).rejects.toThrowError(/--request is required/)
     await expect(cli(['explode'])).rejects.toThrowError(/Unknown merge operation/)
     harness.close()
   })
 })
 
-/** Reads one file from the remote's main branch — what actually shipped. Line endings normalized: checkout noise, not content. */
-function remoteFile(harness: ReturnType<typeof mergeQueueHarness>, file: string): string | undefined {
+/** Reads one file from a branch on the remote — what actually shipped. Line endings normalized: checkout noise, not content. */
+function remoteFile(harness: ReturnType<typeof mergeQueueHarness>, file: string, branch = 'main'): string | undefined {
   const git = new GitRunner(harness.repoRoot)
-  git.run(['fetch', '--quiet', harness.remote, 'main'])
+  git.run(['fetch', '--quiet', harness.remote, branch])
   const head = git.run(['rev-parse', 'FETCH_HEAD'])
   const dir = tempDirectory('remote-inspect')
   git.run(['worktree', 'add', '--quiet', '--detach', dir, head])

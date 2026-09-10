@@ -30,6 +30,20 @@ export interface MergeQueueReport {
   failed: number
   conflicted: number
   stale: number
+  /** Requests held because their target is protected and no approver has released them. */
+  awaitingApproval: number
+}
+
+/**
+ * Matches a branch against a protected-branch pattern. Exact names, or a single
+ * trailing `*` for a namespace like `release/*` — enough for real protection
+ * rules without pulling in a glob dependency for one comparison.
+ */
+export function isProtectedBranch(branch: string, patterns: readonly string[]): boolean {
+  return patterns.some((pattern) => {
+    if (!pattern.endsWith('*')) return pattern === branch
+    return branch.startsWith(pattern.slice(0, -1))
+  })
 }
 
 export interface MergeCoordinatorOptions extends ClockOptions {
@@ -40,6 +54,12 @@ export interface MergeCoordinatorOptions extends ClockOptions {
   gates: readonly GateDefinition[]
   runner: GateRunner
   scope: ScopeRef
+  /**
+   * Branches that may not be landed on without an explicit approval, as exact
+   * names or `prefix*` patterns. Empty by default: protection is opt-in, and a
+   * protected target is held before any integration happens.
+   */
+  protectedBranches?: readonly string[]
   mail?: MailService
   board?: WorkBoard
 }
@@ -75,6 +95,10 @@ export class MergeCoordinator {
   enqueue(actor: ActorContext, input: EnqueueInput): MergeRequest {
     assertCapability(actor.capabilities, 'merge:execute')
     const occurredAt = this.now().toISOString()
+    // A protected target is held before anything is integrated: no worktree, no
+    // gates, no push until an approver releases it. Holding at enqueue rather
+    // than at land means an unapproved request never touches the target at all.
+    const isProtected = isProtectedBranch(input.targetBranch, this.options.protectedBranches ?? [])
     const request: MergeRequest = {
       id: createId(),
       scope: this.options.scope,
@@ -83,7 +107,8 @@ export class MergeCoordinator {
       sourceBranch: input.sourceBranch,
       targetBranch: input.targetBranch,
       targetSha: this.targetHead(input.targetBranch),
-      state: 'open',
+      state: isProtected ? 'awaiting_approval' : 'open',
+      protectedTarget: isProtected ? true : undefined,
       createdBy: actor.actorId,
       createdAt: occurredAt,
       updatedAt: occurredAt,
@@ -91,8 +116,45 @@ export class MergeCoordinator {
     this.ledger.insertMergeRequest(request)
     this.record(actor, 'enqueued', `enqueued:${request.id}`, occurredAt, {
       id: request.id, source: request.sourceBranch, target: request.targetBranch, targetSha: request.targetSha,
+      protectedTarget: isProtected,
     }, request.workItemId)
+    if (isProtected) {
+      this.record(actor, 'approval-required', `approval-required:${request.id}`, occurredAt, {
+        id: request.id, source: request.sourceBranch, target: request.targetBranch,
+      }, request.workItemId)
+      this.options.mail?.send(actor, this.options.scope, {
+        queue: 'supervisor',
+        subject: 'MERGE_READY',
+        body: [
+          `Branch ${request.sourceBranch} is queued for the protected branch ${request.targetBranch}.`,
+          'It will not be integrated, gated, or pushed until an approver releases it.',
+          `Approve with: hive merge approve --request ${request.id}`,
+        ].join('\n'),
+        type: 'protocol',
+        priority: 'high',
+      })
+    }
     return request
+  }
+
+  /**
+   * Releases a request held against a protected target. `merge:approve` is a
+   * capability of its own, so holding `merge:execute` — which every queue
+   * worker needs — is never enough to open a protected branch.
+   */
+  approve(actor: ActorContext, requestId: string): MergeRequest {
+    assertCapability(actor.capabilities, 'merge:approve')
+    const existing = this.ledger.mergeRequest(requestId)
+    if (!existing) throw new HiveError('MERGE_NOT_FOUND', `Merge request ${requestId} not found`)
+    const occurredAt = this.now().toISOString()
+    const approved = this.ledger.approveMergeRequest(requestId, actor.actorId, occurredAt)
+    if (!approved) {
+      throw new HiveError('MERGE_STATE', `Merge request ${requestId} is ${existing.state}, not awaiting approval`)
+    }
+    this.record(actor, 'approved', `approved:${requestId}`, occurredAt, {
+      id: requestId, target: approved.targetBranch, approvedBy: actor.actorId,
+    }, approved.workItemId)
+    return approved
   }
 
   requests(actor: ActorContext, scope?: ScopeRef, states?: readonly MergeRequest['state'][]): MergeRequest[] {
@@ -118,14 +180,18 @@ export class MergeCoordinator {
       failed: prepared.failed + landed.failed,
       conflicted: prepared.conflicted + landed.conflicted,
       stale: landed.stale,
+      awaitingApproval: prepared.awaitingApproval,
     }
   }
 
   /** Integrates open requests into batches and runs the gates; nothing is pushed. */
   async prepare(actor: ActorContext): Promise<MergeQueueReport> {
     assertCapability(actor.capabilities, 'merge:execute')
-    const report: MergeQueueReport = { enqueued: 0, batches: 0, landed: 0, failed: 0, conflicted: 0, stale: 0 }
+    const report: MergeQueueReport = { enqueued: 0, batches: 0, landed: 0, failed: 0, conflicted: 0, stale: 0, awaitingApproval: 0 }
     const open = this.ledger.listMergeRequests(this.options.scope, ['open'])
+    // Held requests are reported, never prepared: `open` is the only state this
+    // pass claims, so a protected target waits without a special case below.
+    report.awaitingApproval = this.ledger.listMergeRequests(this.options.scope, ['awaiting_approval']).length
     const byTarget = new Map<string, MergeRequest[]>()
     for (const request of open) {
       const group = byTarget.get(request.targetBranch) ?? []
@@ -158,7 +224,7 @@ export class MergeCoordinator {
   /** Lands everything that passed its gates, after re-verifying the target never moved. */
   async land(actor: ActorContext): Promise<MergeQueueReport> {
     assertCapability(actor.capabilities, 'merge:execute')
-    const report: MergeQueueReport = { enqueued: 0, batches: 0, landed: 0, failed: 0, conflicted: 0, stale: 0 }
+    const report: MergeQueueReport = { enqueued: 0, batches: 0, landed: 0, failed: 0, conflicted: 0, stale: 0, awaitingApproval: 0 }
     const gated = this.ledger.listMergeRequests(this.options.scope, ['gated'])
     // Landing is per batch: one integration, one target check, one push — every
     // request in the batch rides the same commit.

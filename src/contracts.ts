@@ -7,6 +7,9 @@ export type Capability =
   | 'work:mutate'
   | 'runtime:control'
   | 'merge:execute'
+  /** Releasing a merge onto a protected branch. Separate from `merge:execute` so an agent
+   *  that may queue and run the queue still cannot approve its own way onto a protected target. */
+  | 'merge:approve'
   | 'context:read'
   | 'context:write'
   | 'event:ingest'
@@ -751,6 +754,8 @@ export interface SessionRecord {
 
 export type MergeRequestState =
   | 'open'
+  /** Queued against a protected target: held before any integration until an approver releases it. */
+  | 'awaiting_approval'
   | 'preparing'
   | 'gated'
   | 'landing'
@@ -787,6 +792,11 @@ export interface MergeRequest {
   /** Conflicting paths, captured before the merge is aborted. */
   conflictFiles?: string[]
   gateResults?: MergeGateResult[]
+  /** True when the target was protected at enqueue time, so the hold is part of the record. */
+  protectedTarget?: boolean
+  /** Who released this request onto a protected target, and when. */
+  approvedBy?: string
+  approvedAt?: string
   createdBy: string
   createdAt: string
   updatedAt: string

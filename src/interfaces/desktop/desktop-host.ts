@@ -47,6 +47,7 @@ export const desktopOperatorCapabilities: readonly Capability[] = [
   'work:mutate',
   'runtime:control',
   'merge:execute',
+  'merge:approve',
   'context:read',
   'context:write',
   'event:ingest',

@@ -10,7 +10,7 @@ export interface MergeCliSurfaces {
   convoys: ConvoyService
 }
 
-const operations = ['enqueue', 'requests', 'process', 'prepare', 'land', 'convoy', 'convoy-scan', 'convoy-close'] as const
+const operations = ['enqueue', 'requests', 'approve', 'process', 'prepare', 'land', 'convoy', 'convoy-scan', 'convoy-close'] as const
 type MergeOperation = (typeof operations)[number]
 
 /**
@@ -39,6 +39,10 @@ export async function runMergeCli(surfaces: MergeCliSurfaces, actor: ActorContex
     case 'requests': {
       const states = rest.filter((_, index) => rest[index - 1] === '--state')
       return render(surfaces.queue.requests(actor, scope, states as never))
+    }
+    case 'approve': {
+      const requestId = requireValue('--request', flagValue(rest, '--request'))
+      return render(surfaces.queue.approve(actor, requestId))
     }
     case 'process': {
       const report = await surfaces.queue.process(actor)
@@ -74,6 +78,9 @@ export function usage(): string {
     '  process               One full pass: prepare (integrate + gates) then land',
     '  prepare               Integrate and gate only — nothing is pushed',
     '  land                  Push what passed gates, after re-verifying the target',
+    '',
+    'Protected branches (merge:approve):',
+    '  approve               Release a request held for a protected target (--request)',
     '',
     'Convoys (merge:execute):',
     '  convoy                Bring a convoy into being (--convoy)',

@@ -198,7 +198,10 @@ describe('verified merge queue — the Phase 7 gate', () => {
     expect(closure.closed).toBe(1)
     const resend = await natural.convoys.scan(operator)
     expect(resend.closed).toBe(0)
-    const mergedMail = natural.mail.inbox(operator, { queue: 'supervisor' }).filter((message) => message.subject === 'MERGED')
+    // Exactly one convoy-closure letter, distinct from the per-request MERGED
+    // letters each landing sends: the convoy converged once.
+    const mergedMail = natural.mail.inbox(operator, { queue: 'supervisor' })
+      .filter((message) => message.subject === 'MERGED' && message.body.includes('Convoy release-2'))
     expect(mergedMail).toHaveLength(1)
     expect(natural.convoys.convoys(operator, ['closed'])).toHaveLength(1)
     natural.close()
@@ -275,6 +278,63 @@ describe('verified merge queue — the Phase 7 gate', () => {
     await harness.queue.process(operator)
     const closure = await harness.convoys.scan(operator)
     expect(closure.closed).toBe(1)
+    harness.close()
+  })
+
+  it('claims its target with a fencing token, and a second coordinator does not race it', async () => {
+    const harness = mergeQueueHarness([operator])
+    harness.branchWithCommit('claimed', 'claimed.txt', 'claimed work\n')
+    const request = harness.queue.enqueue(operator, { sourceBranch: 'claimed', targetBranch: 'main' })
+    // Enqueue records what was asked for: a commit, not just a branch name.
+    expect(request.sourceCommit).toHaveLength(40)
+
+    // Another coordinator already holds the target: this pass must not touch git.
+    // Preparation contends, so nothing reaches the gates and landing has no batch.
+    const held = harness.ledger.acquireLease(operator, 'merge', `${harness.scope.projectId}:main`, 60_000)
+    const before = harness.remoteHead('main')
+    const contended = await harness.queue.process(operator)
+    expect(contended).toMatchObject({ contended: 1, landed: 0, batches: 0 })
+    expect(harness.remoteHead('main')).toBe(before)
+    expect(harness.queue.requests(operator, harness.scope, ['open'])).toHaveLength(1)
+
+    // Released, the same pass lands and records the claim that authorized it.
+    harness.ledger.releaseLease(operator, held.id)
+    const landed = await harness.queue.process(operator)
+    expect(landed).toMatchObject({ landed: 1, contended: 0 })
+    const final = harness.queue.requests(operator, harness.scope, ['landed'])[0]
+    expect(final.claimedBy).toBe(operator.actorId)
+    // The token is monotonic, so a later claim always outranks the one it replaced.
+    expect(final.fencingToken).toBeGreaterThan(held.fencingToken)
+    // The merge commit is real and is what the target now points at.
+    expect(final.mergeCommit).toHaveLength(40)
+    expect(harness.remoteHead('main')).toBe(final.mergeCommit)
+    // The claim is released once the pass ends: nothing is left holding the target.
+    expect(harness.ledger.activeLease('merge', `${harness.scope.projectId}:main`)).toBeUndefined()
+    harness.close()
+  })
+
+  it('reports a landing as MERGED and a gate failure as MERGE_FAILED', async () => {
+    const harness = mergeQueueHarness([operator])
+    harness.branchWithCommit('good', 'good.txt', 'fine\n')
+    harness.queue.enqueue(operator, { sourceBranch: 'good', targetBranch: 'main' })
+    await harness.queue.process(operator)
+
+    const merged = harness.mail.inbox(operator, { queue: 'supervisor' }).filter((message) => message.subject === 'MERGED')
+    expect(merged).toHaveLength(1)
+    expect(merged[0].body).toContain('good')
+    expect(merged[0].body).toContain('main')
+
+    // A branch that breaks the gate fails alone, and says so by mail.
+    harness.branchWithCommit('bad', 'broken.txt', 'breaks the gate\n')
+    harness.queue.enqueue(operator, { sourceBranch: 'bad', targetBranch: 'main' })
+    const failed = await harness.queue.process(operator)
+    expect(failed.failed).toBe(1)
+    const failure = harness.mail.inbox(operator, { queue: 'supervisor' }).filter((message) => message.subject === 'MERGE_FAILED')
+    expect(failure).toHaveLength(1)
+    expect(failure[0].body).toContain('gate_failure')
+    expect(failure[0].priority).toBe('high')
+    // The failed request carries no merge commit: nothing shipped.
+    expect(harness.queue.requests(operator, harness.scope, ['failed'])[0].mergeCommit).toBeUndefined()
     harness.close()
   })
 

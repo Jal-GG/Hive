@@ -204,8 +204,13 @@ interface MergeRequestRow extends ScopeRow {
   run_id: string | null
   source_branch: string
   target_branch: string
+  source_commit: string | null
   target_sha: string
+  merge_commit: string | null
   batch_id: string | null
+  claimed_by: string | null
+  fencing_token: number | null
+  claim_expires_at: string | null
   state: MergeRequestState
   failure_kind: string | null
   failure_detail: string | null
@@ -247,8 +252,13 @@ function toMergeRequest(row: MergeRequestRow): MergeRequest {
     runId: row.run_id ?? undefined,
     sourceBranch: row.source_branch,
     targetBranch: row.target_branch,
+    sourceCommit: row.source_commit ?? undefined,
     targetSha: row.target_sha,
+    mergeCommit: row.merge_commit ?? undefined,
     batchId: row.batch_id ?? undefined,
+    claimedBy: row.claimed_by ?? undefined,
+    fencingToken: row.fencing_token ?? undefined,
+    claimExpiresAt: row.claim_expires_at ?? undefined,
     state: row.state,
     failureKind: (row.failure_kind as MergeRequest['failureKind']) ?? undefined,
     failureDetail: row.failure_detail ?? undefined,
@@ -1564,11 +1574,13 @@ export class Ledger {
 
   insertMergeRequest(request: MergeRequest): void {
     this.statement(`INSERT INTO merge_requests
-      (id, workspace_id, project_id, work_item_id, run_id, source_branch, target_branch, target_sha,
-       batch_id, state, failure_kind, failure_detail, conflict_files, gate_results,
+      (id, workspace_id, project_id, work_item_id, run_id, source_branch, target_branch, source_commit, target_sha,
+       merge_commit, batch_id, claimed_by, fencing_token, claim_expires_at, state,
+       failure_kind, failure_detail, conflict_files, gate_results,
        protected_target, approved_by, approved_at, created_by, created_at, updated_at, closed_at)
-      VALUES (@id, @workspaceId, @projectId, @workItemId, @runId, @sourceBranch, @targetBranch, @targetSha,
-       @batchId, @state, @failureKind, @failureDetail, @conflictFiles, @gateResults,
+      VALUES (@id, @workspaceId, @projectId, @workItemId, @runId, @sourceBranch, @targetBranch, @sourceCommit, @targetSha,
+       @mergeCommit, @batchId, @claimedBy, @fencingToken, @claimExpiresAt, @state,
+       @failureKind, @failureDetail, @conflictFiles, @gateResults,
        @protectedTarget, @approvedBy, @approvedAt, @createdBy, @createdAt, @updatedAt, @closedAt)`).run({
       id: request.id,
       workspaceId: request.scope.workspaceId,
@@ -1577,8 +1589,13 @@ export class Ledger {
       runId: request.runId ?? null,
       sourceBranch: request.sourceBranch,
       targetBranch: request.targetBranch,
+      sourceCommit: request.sourceCommit ?? null,
       targetSha: request.targetSha,
+      mergeCommit: request.mergeCommit ?? null,
       batchId: request.batchId ?? null,
+      claimedBy: request.claimedBy ?? null,
+      fencingToken: request.fencingToken ?? null,
+      claimExpiresAt: request.claimExpiresAt ?? null,
       state: request.state,
       failureKind: request.failureKind ?? null,
       failureDetail: request.failureDetail ?? null,
@@ -1625,7 +1642,9 @@ export class Ledger {
     const result = this.statement(`UPDATE merge_requests SET state = ?, batch_id = COALESCE(?, batch_id),
       failure_kind = COALESCE(?, failure_kind), failure_detail = COALESCE(?, failure_detail),
       conflict_files = COALESCE(?, conflict_files), gate_results = COALESCE(?, gate_results),
-      target_sha = COALESCE(?, target_sha), closed_at = COALESCE(?, closed_at), updated_at = ?
+      target_sha = COALESCE(?, target_sha), merge_commit = COALESCE(?, merge_commit),
+      claimed_by = COALESCE(?, claimed_by), fencing_token = COALESCE(?, fencing_token),
+      claim_expires_at = COALESCE(?, claim_expires_at), closed_at = COALESCE(?, closed_at), updated_at = ?
       WHERE id = ? AND state = ?`).run(
       patch.state,
       patch.batchId ?? null,
@@ -1634,6 +1653,10 @@ export class Ledger {
       patch.conflictFiles ? JSON.stringify(patch.conflictFiles) : null,
       patch.gateResults ? JSON.stringify(patch.gateResults) : null,
       patch.targetSha ?? null,
+      patch.mergeCommit ?? null,
+      patch.claimedBy ?? null,
+      patch.fencingToken ?? null,
+      patch.claimExpiresAt ?? null,
       patch.closedAt ?? null,
       updatedAt,
       id,

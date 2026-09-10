@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   ActorContext,
+  Lease,
   MergeBatch,
   MergeBatchState,
   MergeFailureKind,
@@ -32,6 +33,8 @@ export interface MergeQueueReport {
   stale: number
   /** Requests held because their target is protected and no approver has released them. */
   awaitingApproval: number
+  /** Targets skipped because another coordinator holds the merge lease on them (C19). */
+  contended: number
 }
 
 /**
@@ -60,6 +63,8 @@ export interface MergeCoordinatorOptions extends ClockOptions {
    * protected target is held before any integration happens.
    */
   protectedBranches?: readonly string[]
+  /** How long a target-branch merge claim is held before it is considered abandoned (C19). */
+  claimTtlMs?: number
   mail?: MailService
   board?: WorkBoard
 }
@@ -106,6 +111,7 @@ export class MergeCoordinator {
       runId: input.runId,
       sourceBranch: input.sourceBranch,
       targetBranch: input.targetBranch,
+      sourceCommit: this.sourceHead(input.sourceBranch),
       targetSha: this.targetHead(input.targetBranch),
       state: isProtected ? 'awaiting_approval' : 'open',
       protectedTarget: isProtected ? true : undefined,
@@ -181,13 +187,14 @@ export class MergeCoordinator {
       conflicted: prepared.conflicted + landed.conflicted,
       stale: landed.stale,
       awaitingApproval: prepared.awaitingApproval,
+      contended: prepared.contended + landed.contended,
     }
   }
 
   /** Integrates open requests into batches and runs the gates; nothing is pushed. */
   async prepare(actor: ActorContext): Promise<MergeQueueReport> {
     assertCapability(actor.capabilities, 'merge:execute')
-    const report: MergeQueueReport = { enqueued: 0, batches: 0, landed: 0, failed: 0, conflicted: 0, stale: 0, awaitingApproval: 0 }
+    const report: MergeQueueReport = { enqueued: 0, batches: 0, landed: 0, failed: 0, conflicted: 0, stale: 0, awaitingApproval: 0, contended: 0 }
     const open = this.ledger.listMergeRequests(this.options.scope, ['open'])
     // Held requests are reported, never prepared: `open` is the only state this
     // pass claims, so a protected target waits without a special case below.
@@ -199,24 +206,36 @@ export class MergeCoordinator {
       byTarget.set(request.targetBranch, group)
     }
     for (const [targetBranch, requests] of byTarget) {
-      const occurredAt = this.now().toISOString()
-      // The remote's objects must be in the repo before a worktree can check
-      // them out; ls-remote names the head, fetch makes it exist here.
-      this.repo.run(['fetch', '--quiet', this.options.remote, targetBranch])
-      const targetSha = this.targetHead(targetBranch)
-      const batch: MergeBatch = {
-        id: createId(),
-        scope: this.options.scope,
-        targetBranch,
-        targetSha,
-        mergeRequestIds: requests.map((request) => request.id),
-        state: 'integrating',
-        createdAt: occurredAt,
-        updatedAt: occurredAt,
+      // C19: one coordinator integrates a given target at a time. The claim is a
+      // real lease with a fencing token, so a second coordinator does not race
+      // this one through git — it simply finds the target taken and moves on.
+      const claim = this.claimTarget(actor, targetBranch)
+      if (!claim) {
+        report.contended += 1
+        continue
       }
-      this.ledger.insertMergeBatch(batch)
-      report.batches += 1
-      await this.integrateBatch(actor, batch, requests, report)
+      try {
+        const occurredAt = this.now().toISOString()
+        // The remote's objects must be in the repo before a worktree can check
+        // them out; ls-remote names the head, fetch makes it exist here.
+        this.repo.run(['fetch', '--quiet', this.options.remote, targetBranch])
+        const targetSha = this.targetHead(targetBranch)
+        const batch: MergeBatch = {
+          id: createId(),
+          scope: this.options.scope,
+          targetBranch,
+          targetSha,
+          mergeRequestIds: requests.map((request) => request.id),
+          state: 'integrating',
+          createdAt: occurredAt,
+          updatedAt: occurredAt,
+        }
+        this.ledger.insertMergeBatch(batch)
+        report.batches += 1
+        await this.integrateBatch(actor, batch, requests, report, claim)
+      } finally {
+        this.releaseTarget(actor, claim)
+      }
     }
     return report
   }
@@ -224,7 +243,7 @@ export class MergeCoordinator {
   /** Lands everything that passed its gates, after re-verifying the target never moved. */
   async land(actor: ActorContext): Promise<MergeQueueReport> {
     assertCapability(actor.capabilities, 'merge:execute')
-    const report: MergeQueueReport = { enqueued: 0, batches: 0, landed: 0, failed: 0, conflicted: 0, stale: 0, awaitingApproval: 0 }
+    const report: MergeQueueReport = { enqueued: 0, batches: 0, landed: 0, failed: 0, conflicted: 0, stale: 0, awaitingApproval: 0, contended: 0 }
     const gated = this.ledger.listMergeRequests(this.options.scope, ['gated'])
     // Landing is per batch: one integration, one target check, one push — every
     // request in the batch rides the same commit.
@@ -236,8 +255,15 @@ export class MergeCoordinator {
       byBatch.set(key, group)
     }
     for (const [batchKey, requests] of byBatch) {
-      const occurredAt = this.now().toISOString()
       const first = requests[0]
+      // The same target claim landing takes as preparation did: the push is the
+      // moment the target actually moves, so it is the one that most needs it.
+      const claim = this.claimTarget(actor, first.targetBranch)
+      if (!claim) {
+        report.contended += 1
+        continue
+      }
+      const occurredAt = this.now().toISOString()
       const currentSha = this.targetHead(first.targetBranch)
       // The one fact preparation depended on: the target is where it was. If it
       // moved, the integration is invalid — not failed, just no longer about
@@ -250,6 +276,7 @@ export class MergeCoordinator {
           }, request.workItemId)
         }
         report.stale += requests.length
+        this.releaseTarget(actor, claim)
         continue
       }
       const integrationPath = this.integrationPath(batchKey)
@@ -257,7 +284,9 @@ export class MergeCoordinator {
         // Claim the landing first: from here a failure is a push failure, and
         // the requests are in the state that says so.
         for (const request of requests) {
-          this.ledger.transitionMergeRequest(request.id, 'gated', { state: 'landing' }, occurredAt)
+          this.ledger.transitionMergeRequest(request.id, 'gated', {
+            state: 'landing', claimedBy: actor.actorId, fencingToken: claim.fencingToken, claimExpiresAt: claim.expiresAt,
+          }, occurredAt)
         }
         const integration = this.repo.at(integrationPath)
         // The push must be a fast-forward of the recorded SHA — never a rewrite.
@@ -268,13 +297,20 @@ export class MergeCoordinator {
           continue
         }
         integration.run(['push', this.options.remote, `HEAD:${first.targetBranch}`])
+        // Only now is there a merge commit: the SHA is read after the push
+        // succeeded, so a recorded merge_commit always means something shipped.
+        const mergeCommit = integration.run(['rev-parse', 'HEAD'])
         for (const request of requests) {
-          const landed = this.ledger.transitionMergeRequest(request.id, 'landing', { state: 'landed', closedAt: occurredAt }, occurredAt)
+          const landed = this.ledger.transitionMergeRequest(request.id, 'landing', { state: 'landed', mergeCommit, closedAt: occurredAt }, occurredAt)
           if (!landed) throw new HiveError('MERGE_STATE', `Merge request ${request.id} left landing before it landed`)
           report.landed += 1
           this.record(actor, 'landed', `landed:${request.id}`, occurredAt, {
-            id: request.id, source: request.sourceBranch, target: request.targetBranch, targetSha: request.targetSha,
+            id: request.id, source: request.sourceBranch, target: request.targetBranch, targetSha: request.targetSha, mergeCommit,
           }, request.workItemId)
+          this.notify(actor, 'MERGED', 'normal', [
+            `Branch ${request.sourceBranch} landed on ${request.targetBranch} as ${mergeCommit.slice(0, 12)}.`,
+            request.workItemId ? `Work item: ${request.workItemId}` : '',
+          ].filter(Boolean).join('\n'))
           this.mergeLinkedItem(actor, request)
         }
         if (first.batchId) this.ledger.patchMergeBatch(first.batchId, { state: 'landed' }, occurredAt)
@@ -284,13 +320,14 @@ export class MergeCoordinator {
         }
       } finally {
         this.cleanupWorktree(actor, integrationPath, occurredAt)
+        this.releaseTarget(actor, claim)
       }
     }
     return report
   }
 
   /** Integrates one batch: merge sources in order, classify conflicts, run gates, bisect failures. */
-  private async integrateBatch(actor: ActorContext, batch: MergeBatch, requests: readonly MergeRequest[], report: MergeQueueReport): Promise<void> {
+  private async integrateBatch(actor: ActorContext, batch: MergeBatch, requests: readonly MergeRequest[], report: MergeQueueReport, claim: Lease): Promise<void> {
     const occurredAt = this.now().toISOString()
     const integrationPath = this.integrationPath(batch.id)
     try {
@@ -298,7 +335,10 @@ export class MergeCoordinator {
       this.repo.run(['worktree', 'add', '--quiet', '--detach', integrationPath, batch.targetSha])
       const integration = this.repo.at(integrationPath)
       for (const request of requests) {
-        this.ledger.transitionMergeRequest(request.id, 'open', { state: 'preparing', batchId: batch.id, targetSha: batch.targetSha }, occurredAt)
+        this.ledger.transitionMergeRequest(request.id, 'open', {
+          state: 'preparing', batchId: batch.id, targetSha: batch.targetSha,
+          claimedBy: actor.actorId, fencingToken: claim.fencingToken, claimExpiresAt: claim.expiresAt,
+        }, occurredAt)
         const mergeOk = integration.succeeds([...gitIdentityArgs, 'merge', '--no-ff', '--quiet', '-m', `merge ${request.sourceBranch} into ${batch.targetBranch}`, request.sourceBranch])
         if (mergeOk) continue
         // Conflict: capture the paths, abort, and send the branch back for rework.
@@ -364,7 +404,7 @@ export class MergeCoordinator {
         }
         this.ledger.insertMergeBatch(sub)
         report.batches += 1
-        await this.integrateBatch(actor, sub, half, report)
+        await this.integrateBatch(actor, sub, half, report, claim)
       }
     } catch (error) {
       // Infrastructure: git itself refused something. The requests go back to
@@ -446,6 +486,15 @@ export class MergeCoordinator {
     this.record(actor, state, `${state}:${request.id}`, occurredAt, {
       id: request.id, kind, detail,
     }, request.workItemId)
+    // A conflict already gets its own REWORK_REQUEST; everything else that ends
+    // a merge is reported as MERGE_FAILED, so no failure is silent (§6.4).
+    if (state === 'failed') {
+      this.notify(actor, 'MERGE_FAILED', 'high', [
+        `Branch ${request.sourceBranch} failed to land on ${request.targetBranch}.`,
+        `Cause: ${kind}.`,
+        detail,
+      ].join('\n'))
+    }
   }
 
   /**
@@ -480,6 +529,46 @@ export class MergeCoordinator {
 
   private integrationPath(batchId: string): string {
     return join(tmpdir(), `hive-merge-${batchId}`)
+  }
+
+  /** The source branch's head locally, so a request names a commit and not just a branch name (§6.3). */
+  private sourceHead(sourceBranch: string): string | undefined {
+    return this.repo.tryRun(['rev-parse', sourceBranch]) ?? undefined
+  }
+
+  /**
+   * C19: claims the target branch for this pass with a real fencing token. A
+   * lease conflict is not an error — another coordinator holds the target, and
+   * this pass leaves it alone rather than racing it through git.
+   */
+  private claimTarget(actor: ActorContext, targetBranch: string): Lease | undefined {
+    try {
+      return this.ledger.acquireLease(actor, 'merge', `${this.options.scope.projectId}:${targetBranch}`, this.options.claimTtlMs ?? 10 * 60_000)
+    } catch (error) {
+      if (error instanceof HiveError && error.code === 'LEASE_CONFLICT') return undefined
+      throw error
+    }
+  }
+
+  /**
+   * Releasing is best-effort — a lease that already expired is not ours to
+   * release — but a refusal is recorded rather than swallowed: a release that
+   * silently fails leaves the target claimed and every later pass contending.
+   */
+  private releaseTarget(actor: ActorContext, claim: Lease): void {
+    try {
+      this.ledger.releaseLease(actor, claim.id)
+    } catch (error) {
+      const occurredAt = this.now().toISOString()
+      this.record(actor, 'claim-release-failed', `claim-release-failed:${claim.id}`, occurredAt, {
+        leaseId: claim.id, resourceId: claim.resourceId, detail: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  /** Protocol mail to the supervisor queue (§6.4), when a mail service is wired in. */
+  private notify(actor: ActorContext, subject: string, priority: 'normal' | 'high' | 'urgent', body: string): void {
+    this.options.mail?.send(actor, this.options.scope, { queue: 'supervisor', subject, body, type: 'protocol', priority })
   }
 
   private record(actor: ActorContext, action: string, key: string, occurredAt: string, payload: Record<string, unknown>, workItemId?: string): void {

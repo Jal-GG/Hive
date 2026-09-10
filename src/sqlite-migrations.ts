@@ -1,4 +1,4 @@
-export const schemaVersion = 10
+export const schemaVersion = 12
 
 export const migrations: Record<number, string> = {
   1: `
@@ -256,5 +256,43 @@ export const migrations: Record<number, string> = {
     ALTER TABLE merge_requests ADD COLUMN protected_target INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE merge_requests ADD COLUMN approved_by TEXT;
     ALTER TABLE merge_requests ADD COLUMN approved_at TEXT;
+  `,
+  11: `
+    -- Phase 7 §6.3: the rest of the MergeRequest schema. What was asked for
+    -- (source_commit), what actually shipped (merge_commit), and the claim that
+    -- authorized the work (claimant + fencing token), so a merge is auditable
+    -- end to end rather than only by its final state.
+    ALTER TABLE merge_requests ADD COLUMN source_commit TEXT;
+    ALTER TABLE merge_requests ADD COLUMN merge_commit TEXT;
+    ALTER TABLE merge_requests ADD COLUMN claimed_by TEXT;
+    ALTER TABLE merge_requests ADD COLUMN fencing_token INTEGER;
+    ALTER TABLE merge_requests ADD COLUMN claim_expires_at TEXT;
+  `,
+  12: `
+    -- The original table-level UNIQUE(resource_type, resource_id, state) meant a
+    -- resource could hold only ONE released lease for all time, so anything
+    -- leased more than once collided the second time it was released. A run is
+    -- leased once (its id is the resource), so nothing noticed; a merge target is
+    -- leased every pass, and the failed release left the lease active forever.
+    -- The invariant actually wanted is one ACTIVE lease per resource, which is a
+    -- partial index — and history stays queryable.
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE leases_rebuilt (
+      id TEXT PRIMARY KEY,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL REFERENCES actors(id),
+      fencing_token INTEGER NOT NULL,
+      acquired_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      state TEXT NOT NULL
+    );
+    INSERT INTO leases_rebuilt (id, resource_type, resource_id, owner_actor_id, fencing_token, acquired_at, expires_at, state)
+      SELECT id, resource_type, resource_id, owner_actor_id, fencing_token, acquired_at, expires_at, state FROM leases;
+    DROP TABLE leases;
+    ALTER TABLE leases_rebuilt RENAME TO leases;
+    CREATE UNIQUE INDEX leases_active_idx ON leases(resource_type, resource_id) WHERE state = 'active';
+    CREATE INDEX leases_history_idx ON leases(resource_type, resource_id, fencing_token);
+    PRAGMA foreign_keys = ON;
   `,
 }

@@ -783,9 +783,17 @@ export interface MergeRequest {
   runId?: string
   sourceBranch: string
   targetBranch: string
+  /** The source head this request was queued at — what was actually asked for. */
+  sourceCommit?: string
   /** The target head this request was prepared against; movement invalidates preparation. */
   targetSha: string
+  /** The commit that landed on the target, recorded only after the push succeeded (§5.5). */
+  mergeCommit?: string
   batchId?: string
+  /** The actor that claimed this request under a merge lease, and the token it fenced with (C19). */
+  claimedBy?: string
+  fencingToken?: number
+  claimExpiresAt?: string
   state: MergeRequestState
   failureKind?: MergeFailureKind
   failureDetail?: string

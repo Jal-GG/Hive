@@ -853,3 +853,43 @@ export interface ConvoyScanReport {
   /** Items blocked behind work that can no longer proceed. */
   stranded: number
 }
+
+// --- Skills (§7 Phase 8) ---
+
+export type SkillState = 'installed' | 'disabled'
+
+/**
+ * What a skill declares about itself: the installable unit, before it has a
+ * home. `id` doubles as the directory name, so it is validated to a strict
+ * charset — a skill can never name a path it should not occupy.
+ */
+export interface SkillManifest {
+  id: string
+  name: string
+  version: string
+  description: string
+  /** Match tags; a task that needs one of these gets the skill in its packet. */
+  tags: string[]
+  /** The instructions handed to an agent that receives this skill. */
+  body: string
+}
+
+/** An installed skill: its manifest, where it landed, and who put it there. */
+export interface SkillRecord extends SkillManifest {
+  scope: ScopeRef
+  state: SkillState
+  /** Path to the skill's directory, always inside the registry root. */
+  path: string
+  sha256: string
+  /** Where it came from: a directory scan, an operator, an integration. */
+  source: string
+  installedBy: string
+  installedAt: string
+  updatedAt: string
+}
+
+/** What one discovery pass found on disk, and why it rejected what it rejected. */
+export interface SkillDiscoveryReport {
+  found: SkillManifest[]
+  rejected: { path: string; reason: string }[]
+}

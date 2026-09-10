@@ -9,6 +9,7 @@ import {
   ScopeRef,
   SearchHit,
   SkillReference,
+  WorkItem,
   WorkItemSummary,
 } from '../contracts.js'
 import { assertCapability } from '../capabilities.js'
@@ -55,6 +56,8 @@ export interface PacketSources {
   handoffs: HandoffService
   /** Context excerpts come from the canonical store, not from the ledger index alone. */
   filesystem: ContextFilesystem
+  /** Phase 8's registry: resolves the task's declared skills into packet references. */
+  skills?: { forTags(actor: ActorContext, tags: readonly string[], limit?: number): SkillReference[] }
   /** When the lexical index is wired in, search hits for the task join the memory section. */
   search?: { search(actor: ActorContext, scope: ScopeRef, query: string, options?: { tiers?: readonly ContextLevel[]; limit?: number }): SearchHit[] }
 }
@@ -81,7 +84,8 @@ export class PacketCompiler {
     const byteBudget = input.byteBudget ?? defaultPacketByteBudget
     if (byteBudget < 1024) throw new HiveError('INVALID_ARGUMENT', `Packet byte budget must be at least 1024, got ${byteBudget}`)
 
-    const task = this.taskSummary(actor, input.taskId)
+    const item = this.sources.board.item(actor, input.taskId)
+    const task = toSummary(item)
     const warnings: string[] = []
     let used = noticeSize() + roughSize(task)
 
@@ -107,7 +111,18 @@ export class PacketCompiler {
       memory.push({ uri: hit.uri, kind: 'memory', level: hit.tier, title: hit.title, excerpt: hit.snippet })
     }
 
-    const skills = input.skills ?? []
+    // Skills: an explicit list wins, otherwise the registry resolves whatever
+    // the task declared it needs. Bounded like every other section.
+    const resolved = input.skills ?? this.sources.skills?.forTags(actor, requiredSkillsOf(item), maxReferencesPerSection) ?? []
+    const skills: SkillReference[] = []
+    for (const skill of resolved) {
+      if (used + roughSize(skill) > byteBudget) {
+        warnings.push(`skill dropped to fit the ${byteBudget}-byte budget: ${skill.id}`)
+        continue
+      }
+      used += roughSize(skill)
+      skills.push(skill)
+    }
     const mail = this.mailSummaries(actor, scope, input.agentId)
 
     const packet: ContextPacket = {
@@ -174,18 +189,6 @@ export class PacketCompiler {
     }
     if (packet.operationalWarnings.length > 0) sections.push('## Operational warnings\n' + packet.operationalWarnings.map((warning) => `- ${warning}`).join('\n'))
     return sections.join('\n\n') + '\n'
-  }
-
-  private taskSummary(actor: ActorContext, taskId: string): WorkItemSummary {
-    const item = this.sources.board.item(actor, taskId)
-    return {
-      id: item.id,
-      title: item.title,
-      description: item.description,
-      status: item.status,
-      priority: item.priority,
-      assigneeActorId: item.assigneeActorId,
-    }
   }
 
   /**
@@ -273,6 +276,23 @@ export class PacketCompiler {
         snippet: clampExcerpt(message.body.replace(/\s+/g, ' ').trim(), 160),
       }))
   }
+}
+
+function toSummary(item: WorkItem): WorkItemSummary {
+  return {
+    id: item.id,
+    title: item.title,
+    description: item.description,
+    status: item.status,
+    priority: item.priority,
+    assigneeActorId: item.assigneeActorId,
+  }
+}
+
+/** The skill tags a task declared, in the same metadata field the dispatcher routes on. */
+function requiredSkillsOf(item: WorkItem): string[] {
+  const value = item.metadata.requiredSkills
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string') ? (value as string[]) : []
 }
 
 function referenceLine(reference: ContextReference): string {

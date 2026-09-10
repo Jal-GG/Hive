@@ -24,6 +24,7 @@ import { SessionStore } from '../src/session/store.js'
 import { MergeCoordinator } from '../src/merge/coordinator.js'
 import { ConvoyService } from '../src/merge/convoy.js'
 import { commandGateRunner } from '../src/merge/gates.js'
+import { SkillRegistry } from '../src/skills/registry.js'
 import { HandoffService } from '../src/work/handoffs.js'
 import { MailService } from '../src/work/mail.js'
 import { PacketCompiler } from '../src/work/packet.js'
@@ -313,6 +314,33 @@ export function knowledgeHarness(actors: ActorContext[]): KnowledgeHarness {
     { now: harness.clock.now },
   )
   return { ...harness, ingest, search, sessions, searchingPackets }
+}
+
+export interface SkillHarness extends WorkHarness {
+  skills: SkillRegistry
+  /** Where installed skills live; every install must land inside it. */
+  skillsRoot: string
+  /** A packet compiler with the registry wired in, the way the dispatcher would have it. */
+  skillPackets: PacketCompiler
+}
+
+/** The Phase 8 skills plane: a registry over a temp root, and a packet compiler that reads it. */
+export function skillHarness(actors: ActorContext[]): SkillHarness {
+  const harness = workHarness(actors)
+  const skillsRoot = tempDirectory('skills-root')
+  const skills = new SkillRegistry({ ledger: harness.ledger, scope: harness.scope, root: skillsRoot, now: harness.clock.now })
+  const skillPackets = new PacketCompiler(
+    {
+      ledger: harness.ledger,
+      board: harness.board,
+      mail: harness.mail,
+      handoffs: harness.handoffs,
+      filesystem: harness.fs,
+      skills,
+    },
+    { now: harness.clock.now },
+  )
+  return { ...harness, skills, skillsRoot, skillPackets }
 }
 
 export interface MergeHarness extends DispatchHarness {

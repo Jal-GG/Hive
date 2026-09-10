@@ -1,4 +1,4 @@
-export const schemaVersion = 12
+export const schemaVersion = 13
 
 export const migrations: Record<number, string> = {
   1: `
@@ -294,5 +294,29 @@ export const migrations: Record<number, string> = {
     CREATE UNIQUE INDEX leases_active_idx ON leases(resource_type, resource_id) WHERE state = 'active';
     CREATE INDEX leases_history_idx ON leases(resource_type, resource_id, fencing_token);
     PRAGMA foreign_keys = ON;
+  `,
+  13: `
+    -- Phase 8: the skill registry. The files on disk under the registry root are
+    -- the content; this table is the index that makes them discoverable,
+    -- versioned, and installable/uninstallable as a unit.
+    CREATE TABLE IF NOT EXISTS skills (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      version TEXT NOT NULL,
+      description TEXT NOT NULL,
+      tags TEXT NOT NULL,
+      body TEXT NOT NULL,
+      state TEXT NOT NULL,
+      path TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      source TEXT NOT NULL,
+      installed_by TEXT NOT NULL,
+      installed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, project_id, id)
+    );
+    CREATE INDEX IF NOT EXISTS skills_scope_idx ON skills(workspace_id, project_id, state);
   `,
 }

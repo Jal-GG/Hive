@@ -26,6 +26,7 @@ import {
   ScopeRef,
   SessionRecord,
   ConvoyRecord,
+  SkillRecord,
   WorkDependency,
   WorkItem,
   WorkItemStatus,
@@ -155,6 +156,12 @@ const CONVOY_COLUMNS = `SELECT c.*, w.name AS workspace_name, p.name AS project_
   JOIN projects p ON p.id = c.project_id
   WHERE 1 = 1`
 
+const SKILL_COLUMNS = `SELECT s.*, w.name AS workspace_name, p.name AS project_name
+  FROM skills s
+  JOIN workspaces w ON w.id = s.workspace_id
+  JOIN projects p ON p.id = s.project_id
+  WHERE 1 = 1`
+
 /** One ranked row from the FTS index: identity, tier, snippet, and the raw BM25 score. */
 export interface RankedChunk {
   uri: string
@@ -242,6 +249,41 @@ interface ConvoyRow extends ScopeRow {
   closed_by: string | null
   closed_at: string | null
   created_at: string
+}
+
+interface SkillRow extends ScopeRow {
+  id: string
+  name: string
+  version: string
+  description: string
+  tags: string
+  body: string
+  state: SkillRecord['state']
+  path: string
+  sha256: string
+  source: string
+  installed_by: string
+  installed_at: string
+  updated_at: string
+}
+
+function toSkill(row: SkillRow): SkillRecord {
+  return {
+    id: row.id,
+    scope: toScope(row),
+    name: row.name,
+    version: row.version,
+    description: row.description,
+    tags: JSON.parse(row.tags) as string[],
+    body: row.body,
+    state: row.state,
+    path: row.path,
+    sha256: row.sha256,
+    source: row.source,
+    installedBy: row.installed_by,
+    installedAt: row.installed_at,
+    updatedAt: row.updated_at,
+  }
 }
 
 function toMergeRequest(row: MergeRequestRow): MergeRequest {
@@ -1766,6 +1808,64 @@ export class Ledger {
     const result = this.statement(`UPDATE convoys SET state = ?, closed_by = ?, closed_at = ?
       WHERE id = ? AND state = 'active'`).run(to, closedBy, closedAt, id)
     return result.changes === 1 ? this.convoy(id) : undefined
+  }
+
+  // --- Skills (§7 Phase 8) ---
+
+  /** Install or upgrade in place: the row is the index, the files on disk are the content. */
+  upsertSkill(skill: SkillRecord): void {
+    this.statement(`INSERT INTO skills
+      (id, workspace_id, project_id, name, version, description, tags, body, state, path, sha256, source, installed_by, installed_at, updated_at)
+      VALUES (@id, @workspaceId, @projectId, @name, @version, @description, @tags, @body, @state, @path, @sha256, @source, @installedBy, @installedAt, @updatedAt)
+      ON CONFLICT(workspace_id, project_id, id) DO UPDATE SET
+        name = excluded.name, version = excluded.version, description = excluded.description,
+        tags = excluded.tags, body = excluded.body, state = excluded.state, path = excluded.path,
+        sha256 = excluded.sha256, source = excluded.source, updated_at = excluded.updated_at`).run({
+      id: skill.id,
+      workspaceId: skill.scope.workspaceId,
+      projectId: skill.scope.projectId,
+      name: skill.name,
+      version: skill.version,
+      description: skill.description,
+      tags: JSON.stringify(skill.tags),
+      body: skill.body,
+      state: skill.state,
+      path: skill.path,
+      sha256: skill.sha256,
+      source: skill.source,
+      installedBy: skill.installedBy,
+      installedAt: skill.installedAt,
+      updatedAt: skill.updatedAt,
+    })
+  }
+
+  skill(scope: ScopeRef, id: string): SkillRecord | undefined {
+    const row = this.statement(`${SKILL_COLUMNS} AND s.workspace_id = ? AND s.project_id = ? AND s.id = ?`)
+      .get(scope.workspaceId, scope.projectId, id) as (SkillRow & ScopeRow) | undefined
+    return row ? toSkill(row) : undefined
+  }
+
+  listSkills(scope: ScopeRef, states?: readonly SkillRecord['state'][]): SkillRecord[] {
+    const values: unknown[] = [scope.workspaceId, scope.projectId]
+    let where = ' AND s.workspace_id = ? AND s.project_id = ?'
+    if (states && states.length > 0) {
+      where += ` AND s.state IN (${states.map(() => '?').join(', ')})`
+      values.push(...states)
+    }
+    const rows = this.statement(`${SKILL_COLUMNS}${where} ORDER BY s.id`).all(...values) as (SkillRow & ScopeRow)[]
+    return rows.map(toSkill)
+  }
+
+  setSkillState(scope: ScopeRef, id: string, state: SkillRecord['state'], updatedAt: string): SkillRecord | undefined {
+    const result = this.statement('UPDATE skills SET state = ?, updated_at = ? WHERE workspace_id = ? AND project_id = ? AND id = ?')
+      .run(state, updatedAt, scope.workspaceId, scope.projectId, id)
+    return result.changes === 1 ? this.skill(scope, id) : undefined
+  }
+
+  deleteSkill(scope: ScopeRef, id: string): boolean {
+    const result = this.statement('DELETE FROM skills WHERE workspace_id = ? AND project_id = ? AND id = ?')
+      .run(scope.workspaceId, scope.projectId, id)
+    return result.changes === 1
   }
 
   /** Statements are compiled once and reused; re-preparing dominates the cost of small queries. */

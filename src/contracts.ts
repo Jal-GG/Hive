@@ -681,3 +681,68 @@ export interface FleetDigest {
   completedTasks: number
   escalations: number
 }
+
+// --- Ingestion, lexical search, and sessions (§7 Phase 6, C12) ---
+
+/** One ingested file: the change-detection record behind the lexical index. */
+export interface IngestSource {
+  uri: string
+  path: string
+  scope: ScopeRef
+  sha256: string
+  sizeBytes: number
+  mtimeMs: number
+  /** Which parser produced the chunks — provenance survives the index (C12). */
+  parser: string
+  chunkCount: number
+  ingestedAt: string
+}
+
+/** What one ingestion pass found and did. */
+export interface IngestReport {
+  added: number
+  updated: number
+  unchanged: number
+  removed: number
+  chunks: number
+}
+
+/** A parsed, searchable piece of a source at a fixed tier. */
+export interface IngestChunk {
+  uri: string
+  chunkId: string
+  tier: ContextLevel
+  title: string
+  body: string
+}
+
+/** One lexical search result, after fusion. */
+export interface SearchHit {
+  uri: string
+  chunkId: string
+  tier: ContextLevel
+  title: string
+  snippet: string
+  /** Fused RRF score; higher is better. Comparable within one query only. */
+  score: number
+}
+
+/** The durable record of one agent session: a run, distilled. */
+export interface SessionRecord {
+  id: string
+  scope: ScopeRef
+  runId?: string
+  agentId?: string
+  workItemId?: string
+  runtimeProfile: string
+  branch: string
+  startedAt: string
+  endedAt?: string
+  exitCode?: number
+  exitSignal?: string
+  /** L0: one line, what this session was. */
+  summary?: string
+  /** L1: a paragraph, what happened and how it ended. */
+  overview?: string
+  capturedAt?: string
+}

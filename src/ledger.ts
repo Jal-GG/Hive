@@ -12,12 +12,15 @@ import {
   ContextTombstone,
   EventEnvelope,
   Handoff,
+  IngestChunk,
+  IngestSource,
   Lease,
   Message,
   MessageState,
   Run,
   RunState,
   ScopeRef,
+  SessionRecord,
   WorkDependency,
   WorkItem,
   WorkItemStatus,
@@ -101,6 +104,94 @@ interface ActorRow {
   capabilities: string
   workspace_id: string | null
   project_id: string | null
+}
+
+interface IngestSourceRow {
+  uri: string
+  path: string
+  workspace_id: string
+  project_id: string
+  sha256: string
+  size_bytes: number
+  mtime_ms: number
+  parser: string
+  chunk_count: number
+  ingested_at: string
+}
+
+/** Sources and sessions store scope ids; names are joined back like every other scoped row. */
+const INGEST_SOURCE_COLUMNS = `SELECT i.*, w.name AS workspace_name, p.name AS project_name
+  FROM ingest_sources i
+  JOIN workspaces w ON w.id = i.workspace_id
+  JOIN projects p ON p.id = i.project_id
+  WHERE 1 = 1`
+
+const SESSION_COLUMNS = `SELECT s.*, w.name AS workspace_name, p.name AS project_name
+  FROM sessions s
+  JOIN workspaces w ON w.id = s.workspace_id
+  JOIN projects p ON p.id = s.project_id
+  WHERE 1 = 1`
+
+/** One ranked row from the FTS index: identity, tier, snippet, and the raw BM25 score. */
+export interface RankedChunk {
+  uri: string
+  chunkId: string
+  tier: ContextLevel
+  title: string
+  snippet: string
+  /** FTS5's bm25(): negative, smaller (more negative) is better. */
+  bm25: number
+}
+
+function toIngestSource(row: IngestSourceRow & ScopeRow): IngestSource {
+  return {
+    uri: row.uri,
+    path: row.path,
+    scope: toScope(row),
+    sha256: row.sha256,
+    sizeBytes: row.size_bytes,
+    mtimeMs: row.mtime_ms,
+    parser: row.parser,
+    chunkCount: row.chunk_count,
+    ingestedAt: row.ingested_at,
+  }
+}
+
+interface SessionRow {
+  id: string
+  workspace_id: string
+  project_id: string
+  run_id: string | null
+  agent_id: string | null
+  work_item_id: string | null
+  runtime_profile: string
+  branch: string
+  started_at: string
+  ended_at: string | null
+  exit_code: number | null
+  exit_signal: string | null
+  summary: string | null
+  overview: string | null
+  captured_at: string | null
+}
+
+function toSession(row: SessionRow & ScopeRow): SessionRecord {
+  return {
+    id: row.id,
+    scope: toScope(row),
+    runId: row.run_id ?? undefined,
+    agentId: row.agent_id ?? undefined,
+    workItemId: row.work_item_id ?? undefined,
+    runtimeProfile: row.runtime_profile,
+    branch: row.branch,
+    startedAt: row.started_at,
+    endedAt: row.ended_at ?? undefined,
+    exitCode: row.exit_code ?? undefined,
+    exitSignal: row.exit_signal ?? undefined,
+    summary: row.summary ?? undefined,
+    overview: row.overview ?? undefined,
+    capturedAt: row.captured_at ?? undefined,
+  }
 }
 
 interface ScopeRow {
@@ -1243,6 +1334,116 @@ export class Ledger {
       ? this.statement('SELECT COUNT(*) AS count FROM audit_log WHERE action = ?').get(action) as { count: number }
       : this.statement('SELECT COUNT(*) AS count FROM audit_log').get() as { count: number }
     return row.count
+  }
+
+  // --- Knowledge plane: ingestion, lexical search, sessions (§7 Phase 6, C12) ---
+
+  upsertIngestSource(source: IngestSource): void {
+    this.statement(`INSERT INTO ingest_sources
+      (uri, path, workspace_id, project_id, sha256, size_bytes, mtime_ms, parser, chunk_count, ingested_at)
+      VALUES (@uri, @path, @workspaceId, @projectId, @sha256, @sizeBytes, @mtimeMs, @parser, @chunkCount, @ingestedAt)
+      ON CONFLICT(uri) DO UPDATE SET path = excluded.path, sha256 = excluded.sha256, size_bytes = excluded.size_bytes,
+        mtime_ms = excluded.mtime_ms, parser = excluded.parser, chunk_count = excluded.chunk_count,
+        ingested_at = excluded.ingested_at`).run({
+      uri: source.uri,
+      path: source.path,
+      workspaceId: source.scope.workspaceId,
+      projectId: source.scope.projectId,
+      sha256: source.sha256,
+      sizeBytes: source.sizeBytes,
+      mtimeMs: source.mtimeMs,
+      parser: source.parser,
+      chunkCount: source.chunkCount,
+      ingestedAt: source.ingestedAt,
+    })
+  }
+
+  ingestSource(uri: string): IngestSource | undefined {
+    const row = this.statement(`${INGEST_SOURCE_COLUMNS} AND i.uri = ?`).get(uri) as (IngestSourceRow & ScopeRow) | undefined
+    return row ? toIngestSource(row) : undefined
+  }
+
+  listIngestSources(scope?: ScopeRef): IngestSource[] {
+    const rows = scope
+      ? (this.statement(`${INGEST_SOURCE_COLUMNS} AND i.workspace_id = ? AND i.project_id = ? ORDER BY i.uri`).all(scope.workspaceId, scope.projectId) as (IngestSourceRow & ScopeRow)[])
+      : (this.statement(`${INGEST_SOURCE_COLUMNS} ORDER BY i.uri`).all() as (IngestSourceRow & ScopeRow)[])
+    return rows.map(toIngestSource)
+  }
+
+  removeIngestSource(uri: string): void {
+    this.sqlite.transaction(() => {
+      this.statement('DELETE FROM ingest_chunks WHERE uri = ?').run(uri)
+      this.statement('DELETE FROM ingest_sources WHERE uri = ?').run(uri)
+    })
+  }
+
+  /** Replaces every chunk for one source in a single transaction: a reparse is atomic. */
+  replaceIngestChunks(uri: string, chunks: readonly IngestChunk[]): void {
+    this.sqlite.transaction(() => {
+      this.statement('DELETE FROM ingest_chunks WHERE uri = ?').run(uri)
+      const insert = this.statement('INSERT INTO ingest_chunks (uri, chunk_id, tier, title, body) VALUES (?, ?, ?, ?, ?)')
+      for (const chunk of chunks) insert.run(chunk.uri, chunk.chunkId, chunk.tier, chunk.title, chunk.body)
+    })
+  }
+
+  /**
+   * The lexical query: BM25 over the FTS table, joined back to its scope so a
+   * project never sees another project's sources. `match` is the raw FTS5
+   * expression restricted to one column; the caller owns building and escaping it.
+   */
+  searchIngestChunks(match: string, scope: ScopeRef, tier: ContextLevel | undefined, limit: number): RankedChunk[] {
+    const clauses = ['s.workspace_id = ?', 's.project_id = ?']
+    const values: unknown[] = [scope.workspaceId, scope.projectId]
+    if (tier) {
+      clauses.push('c.tier = ?')
+      values.push(tier)
+    }
+    return (this.statement(
+      `SELECT c.uri, c.chunk_id AS chunkId, c.tier, c.title,
+        snippet(ingest_chunks, 4, '«', '»', '…', 16) AS snippet, bm25(ingest_chunks) AS bm25
+       FROM ingest_chunks c JOIN ingest_sources s ON s.uri = c.uri
+       WHERE ingest_chunks MATCH ? AND ${clauses.join(' AND ')}
+       ORDER BY bm25 LIMIT ?`,
+    ).all(match, ...values, limit) as RankedChunk[])
+  }
+
+  upsertSession(session: SessionRecord): void {
+    this.statement(`INSERT INTO sessions
+      (id, workspace_id, project_id, run_id, agent_id, work_item_id, runtime_profile, branch,
+       started_at, ended_at, exit_code, exit_signal, summary, overview, captured_at)
+      VALUES (@id, @workspaceId, @projectId, @runId, @agentId, @workItemId, @runtimeProfile, @branch,
+       @startedAt, @endedAt, @exitCode, @exitSignal, @summary, @overview, @capturedAt)
+      ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at, exit_code = excluded.exit_code,
+        exit_signal = excluded.exit_signal, summary = excluded.summary, overview = excluded.overview,
+        captured_at = excluded.captured_at`).run({
+      id: session.id,
+      workspaceId: session.scope.workspaceId,
+      projectId: session.scope.projectId,
+      runId: session.runId ?? null,
+      agentId: session.agentId ?? null,
+      workItemId: session.workItemId ?? null,
+      runtimeProfile: session.runtimeProfile,
+      branch: session.branch,
+      startedAt: session.startedAt,
+      endedAt: session.endedAt ?? null,
+      exitCode: session.exitCode ?? null,
+      exitSignal: session.exitSignal ?? null,
+      summary: session.summary ?? null,
+      overview: session.overview ?? null,
+      capturedAt: session.capturedAt ?? null,
+    })
+  }
+
+  session(id: string): SessionRecord | undefined {
+    const row = this.statement(`${SESSION_COLUMNS} AND s.id = ?`).get(id) as (SessionRow & ScopeRow) | undefined
+    return row ? toSession(row) : undefined
+  }
+
+  listSessions(scope?: ScopeRef): SessionRecord[] {
+    const rows = scope
+      ? (this.statement(`${SESSION_COLUMNS} AND s.workspace_id = ? AND s.project_id = ? ORDER BY s.started_at DESC, s.id`).all(scope.workspaceId, scope.projectId) as (SessionRow & ScopeRow)[])
+      : (this.statement(`${SESSION_COLUMNS} ORDER BY s.started_at DESC, s.id`).all() as (SessionRow & ScopeRow)[])
+    return rows.map(toSession)
   }
 
   /** Statements are compiled once and reused; re-preparing dominates the cost of small queries. */

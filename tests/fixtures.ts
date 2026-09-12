@@ -21,6 +21,9 @@ import { Supervisor } from '../src/dispatch/supervisor.js'
 import { IngestionPipeline } from '../src/ingest/pipeline.js'
 import { Searcher } from '../src/search/searcher.js'
 import { SessionStore } from '../src/session/store.js'
+import { MergeCoordinator } from '../src/merge/coordinator.js'
+import { ConvoyService } from '../src/merge/convoy.js'
+import { commandGateRunner } from '../src/merge/gates.js'
 import { HandoffService } from '../src/work/handoffs.js'
 import { MailService } from '../src/work/mail.js'
 import { PacketCompiler } from '../src/work/packet.js'
@@ -310,4 +313,102 @@ export function knowledgeHarness(actors: ActorContext[]): KnowledgeHarness {
     { now: harness.clock.now },
   )
   return { ...harness, ingest, search, sessions, searchingPackets }
+}
+
+export interface MergeHarness extends DispatchHarness {
+  queue: MergeCoordinator
+  convoys: ConvoyService
+  /** The bare repository the queue lands against — the way real targets are. */
+  remote: string
+  /** Creates a branch off main with one commit, the way an agent worktree would leave it. */
+  branchWithCommit(branch: string, file: string, content: string): void
+  /** Moves the remote's main by one commit, the way another writer would. */
+  moveTarget(file: string, content: string): void
+  /** The protected branch on the remote, for the approval-gate tests. */
+  protectedBranch: string
+  /** The head of any branch on the remote right now — proof a push did or did not happen. */
+  remoteHead(branch: string): string
+}
+
+/**
+ * The Phase 7 plane: the dispatch harness's repo and work services, plus a bare
+ * remote, a real command gate committed on main, and the merge coordinator and
+ * convoy service over both. The gates are honest — `check.mjs` fails when
+ * `broken.txt` exists — so bisect and conflict behavior are exercised by real
+ * git and a real process, not by scripted verdicts.
+ */
+export function mergeQueueHarness(actors: ActorContext[]): MergeHarness {
+  const harness = dispatchHarness(actors)
+  // The gate scripts are committed on main so every integration worktree has them.
+  writeFileSync(join(harness.repoRoot, 'check.mjs'), [
+    "import { existsSync } from 'node:fs'",
+    "if (existsSync('broken.txt')) { console.error('broken.txt present — gate failed'); process.exit(1) }",
+    "console.log('gate ok')",
+    '',
+  ].join('\n'), 'utf8')
+  writeFileSync(join(harness.repoRoot, 'dirty.mjs'), [
+    "import { existsSync, writeFileSync } from 'node:fs'",
+    "if (existsSync('dirty-marker.txt')) writeFileSync('gate-artifact.txt', 'left behind by the gate', 'utf8')",
+    "console.log('dirty gate ok')",
+    '',
+  ].join('\n'), 'utf8')
+  const git = new GitRunner(harness.repoRoot)
+  git.run(['add', '--all'])
+  git.run([...gitIdentityArgs, 'commit', '--quiet', '-m', 'gate scripts'])
+
+  const remote = `${tempDirectory('merge-remote')}.git`
+  git.run(['clone', '--quiet', '--bare', harness.repoRoot, remote])
+  // A second target on the remote, declared protected below: landing on it
+  // requires an approval, landing on main does not.
+  const protectedBranch = 'release'
+  git.run(['push', '--quiet', remote, `main:${protectedBranch}`])
+
+  const queue = new MergeCoordinator({
+    ledger: harness.ledger,
+    repoRoot: harness.repoRoot,
+    remote,
+    gates: [
+      { name: 'check', command: ['node', 'check.mjs'] },
+      { name: 'dirty', command: ['node', 'dirty.mjs'] },
+    ],
+    runner: commandGateRunner(),
+    scope: harness.scope,
+    protectedBranches: [protectedBranch],
+    mail: harness.mail,
+    board: harness.board,
+    now: harness.clock.now,
+  })
+  const convoys = new ConvoyService({
+    ledger: harness.ledger,
+    board: harness.board,
+    mail: harness.mail,
+    scope: harness.scope,
+    dispatcher: harness.dispatcher,
+    now: harness.clock.now,
+  })
+
+  const branchWithCommit = (branch: string, file: string, content: string): void => {
+    const dir = tempDirectory(`branch-${branch}`)
+    git.run(['worktree', 'add', '--quiet', dir, '-b', branch, 'main'])
+    writeFileSync(join(dir, file), content, 'utf8')
+    const branchGit = new GitRunner(dir)
+    branchGit.run(['add', '--all'])
+    branchGit.run([...gitIdentityArgs, 'commit', '--quiet', '-m', `add ${file}`])
+    git.run(['worktree', 'remove', dir])
+  }
+  const moveTarget = (file: string, content: string): void => {
+    const head = git.run(['ls-remote', remote, 'refs/heads/main']).split('\t')[0]
+    const dir = tempDirectory('merge-move')
+    git.run(['worktree', 'add', '--quiet', '--detach', dir, head])
+    writeFileSync(join(dir, file), content, 'utf8')
+    const moveGit = new GitRunner(dir)
+    moveGit.run(['add', '--all'])
+    moveGit.run([...gitIdentityArgs, 'commit', '--quiet', '-m', `move target: ${file}`])
+    moveGit.run(['push', '--quiet', remote, 'HEAD:main'])
+    git.run(['worktree', 'remove', dir])
+  }
+
+  const remoteHead = (branch: string): string => git.run(['ls-remote', remote, `refs/heads/${branch}`]).split('\t')[0]
+
+  return { ...harness, queue, convoys, remote, branchWithCommit, moveTarget, protectedBranch, remoteHead }
 }

@@ -27,6 +27,19 @@ export const workControlOperationNames: readonly string[] = ['create', 'claim', 
 export const workIpcPrefix = 'hive:work:'
 
 /**
+ * The merge plane a renderer may read (§7 Phase 7, task 6): the queue itself,
+ * one request in full, the batch view that is the branch graph, the gate output
+ * and conflicting files behind a failure, and the recovery view of what the
+ * queue left behind for an operator to decide about.
+ */
+export const mergeBrowseOperationNames: readonly string[] = ['requests', 'request', 'batches', 'graph', 'gates', 'conflicts', 'convoys', 'recovery']
+
+/** Merge operations that change something. `approve` is separately capability-gated. */
+export const mergeControlOperationNames: readonly string[] = ['enqueue', 'prepare', 'land', 'process', 'approve', 'convoy-scan', 'convoy-close']
+
+export const mergeIpcPrefix = 'hive:merge:'
+
+/**
  * The renderer-safe half of the runtime IPC surface: channel names, request and
  * bridge shapes, and nothing else.
  *

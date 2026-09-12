@@ -15,12 +15,17 @@ import {
   IngestChunk,
   IngestSource,
   Lease,
+  MergeBatch,
+  MergeGateResult,
+  MergeRequest,
+  MergeRequestState,
   Message,
   MessageState,
   Run,
   RunState,
   ScopeRef,
   SessionRecord,
+  ConvoyRecord,
   WorkDependency,
   WorkItem,
   WorkItemStatus,
@@ -132,6 +137,24 @@ const SESSION_COLUMNS = `SELECT s.*, w.name AS workspace_name, p.name AS project
   JOIN projects p ON p.id = s.project_id
   WHERE 1 = 1`
 
+const MERGE_REQUEST_COLUMNS = `SELECT m.*, w.name AS workspace_name, p.name AS project_name
+  FROM merge_requests m
+  JOIN workspaces w ON w.id = m.workspace_id
+  JOIN projects p ON p.id = m.project_id
+  WHERE 1 = 1`
+
+const MERGE_BATCH_COLUMNS = `SELECT b.*, w.name AS workspace_name, p.name AS project_name
+  FROM merge_batches b
+  JOIN workspaces w ON w.id = b.workspace_id
+  JOIN projects p ON p.id = b.project_id
+  WHERE 1 = 1`
+
+const CONVOY_COLUMNS = `SELECT c.*, w.name AS workspace_name, p.name AS project_name
+  FROM convoys c
+  JOIN workspaces w ON w.id = c.workspace_id
+  JOIN projects p ON p.id = c.project_id
+  WHERE 1 = 1`
+
 /** One ranked row from the FTS index: identity, tier, snippet, and the raw BM25 score. */
 export interface RankedChunk {
   uri: string
@@ -173,6 +196,107 @@ interface SessionRow {
   summary: string | null
   overview: string | null
   captured_at: string | null
+}
+
+interface MergeRequestRow extends ScopeRow {
+  id: string
+  work_item_id: string | null
+  run_id: string | null
+  source_branch: string
+  target_branch: string
+  source_commit: string | null
+  target_sha: string
+  merge_commit: string | null
+  batch_id: string | null
+  claimed_by: string | null
+  fencing_token: number | null
+  claim_expires_at: string | null
+  state: MergeRequestState
+  failure_kind: string | null
+  failure_detail: string | null
+  conflict_files: string | null
+  gate_results: string | null
+  protected_target: number
+  approved_by: string | null
+  approved_at: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+  closed_at: string | null
+}
+
+interface MergeBatchRow extends ScopeRow {
+  id: string
+  target_branch: string
+  target_sha: string
+  merge_request_ids: string
+  state: MergeBatch['state']
+  isolation_of: string | null
+  created_at: string
+  updated_at: string
+}
+
+interface ConvoyRow extends ScopeRow {
+  id: string
+  state: ConvoyRecord['state']
+  closed_by: string | null
+  closed_at: string | null
+  created_at: string
+}
+
+function toMergeRequest(row: MergeRequestRow): MergeRequest {
+  return {
+    id: row.id,
+    scope: toScope(row),
+    workItemId: row.work_item_id ?? undefined,
+    runId: row.run_id ?? undefined,
+    sourceBranch: row.source_branch,
+    targetBranch: row.target_branch,
+    sourceCommit: row.source_commit ?? undefined,
+    targetSha: row.target_sha,
+    mergeCommit: row.merge_commit ?? undefined,
+    batchId: row.batch_id ?? undefined,
+    claimedBy: row.claimed_by ?? undefined,
+    fencingToken: row.fencing_token ?? undefined,
+    claimExpiresAt: row.claim_expires_at ?? undefined,
+    state: row.state,
+    failureKind: (row.failure_kind as MergeRequest['failureKind']) ?? undefined,
+    failureDetail: row.failure_detail ?? undefined,
+    conflictFiles: row.conflict_files ? (JSON.parse(row.conflict_files) as string[]) : undefined,
+    gateResults: row.gate_results ? (JSON.parse(row.gate_results) as MergeGateResult[]) : undefined,
+    protectedTarget: row.protected_target === 1 ? true : undefined,
+    approvedBy: row.approved_by ?? undefined,
+    approvedAt: row.approved_at ?? undefined,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    closedAt: row.closed_at ?? undefined,
+  }
+}
+
+function toMergeBatch(row: MergeBatchRow): MergeBatch {
+  return {
+    id: row.id,
+    scope: toScope(row),
+    targetBranch: row.target_branch,
+    targetSha: row.target_sha,
+    mergeRequestIds: JSON.parse(row.merge_request_ids) as string[],
+    state: row.state,
+    isolationOf: row.isolation_of ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function toConvoy(row: ConvoyRow): ConvoyRecord {
+  return {
+    id: row.id,
+    scope: toScope(row),
+    state: row.state,
+    closedBy: row.closed_by ?? undefined,
+    closedAt: row.closed_at ?? undefined,
+    createdAt: row.created_at,
+  }
 }
 
 function toSession(row: SessionRow & ScopeRow): SessionRecord {
@@ -1444,6 +1568,204 @@ export class Ledger {
       ? (this.statement(`${SESSION_COLUMNS} AND s.workspace_id = ? AND s.project_id = ? ORDER BY s.started_at DESC, s.id`).all(scope.workspaceId, scope.projectId) as (SessionRow & ScopeRow)[])
       : (this.statement(`${SESSION_COLUMNS} ORDER BY s.started_at DESC, s.id`).all() as (SessionRow & ScopeRow)[])
     return rows.map(toSession)
+  }
+
+  // --- Merge queue and convoys (§7 Phase 7, C10, C15, C22) ---
+
+  insertMergeRequest(request: MergeRequest): void {
+    this.statement(`INSERT INTO merge_requests
+      (id, workspace_id, project_id, work_item_id, run_id, source_branch, target_branch, source_commit, target_sha,
+       merge_commit, batch_id, claimed_by, fencing_token, claim_expires_at, state,
+       failure_kind, failure_detail, conflict_files, gate_results,
+       protected_target, approved_by, approved_at, created_by, created_at, updated_at, closed_at)
+      VALUES (@id, @workspaceId, @projectId, @workItemId, @runId, @sourceBranch, @targetBranch, @sourceCommit, @targetSha,
+       @mergeCommit, @batchId, @claimedBy, @fencingToken, @claimExpiresAt, @state,
+       @failureKind, @failureDetail, @conflictFiles, @gateResults,
+       @protectedTarget, @approvedBy, @approvedAt, @createdBy, @createdAt, @updatedAt, @closedAt)`).run({
+      id: request.id,
+      workspaceId: request.scope.workspaceId,
+      projectId: request.scope.projectId,
+      workItemId: request.workItemId ?? null,
+      runId: request.runId ?? null,
+      sourceBranch: request.sourceBranch,
+      targetBranch: request.targetBranch,
+      sourceCommit: request.sourceCommit ?? null,
+      targetSha: request.targetSha,
+      mergeCommit: request.mergeCommit ?? null,
+      batchId: request.batchId ?? null,
+      claimedBy: request.claimedBy ?? null,
+      fencingToken: request.fencingToken ?? null,
+      claimExpiresAt: request.claimExpiresAt ?? null,
+      state: request.state,
+      failureKind: request.failureKind ?? null,
+      failureDetail: request.failureDetail ?? null,
+      conflictFiles: request.conflictFiles ? JSON.stringify(request.conflictFiles) : null,
+      gateResults: request.gateResults ? JSON.stringify(request.gateResults) : null,
+      protectedTarget: request.protectedTarget ? 1 : 0,
+      approvedBy: request.approvedBy ?? null,
+      approvedAt: request.approvedAt ?? null,
+      createdBy: request.createdBy,
+      createdAt: request.createdAt,
+      updatedAt: request.updatedAt,
+      closedAt: request.closedAt ?? null,
+    })
+  }
+
+  mergeRequest(id: string): MergeRequest | undefined {
+    const row = this.statement(`${MERGE_REQUEST_COLUMNS} AND m.id = ?`).get(id) as (MergeRequestRow & ScopeRow) | undefined
+    return row ? toMergeRequest(row) : undefined
+  }
+
+  listMergeRequests(scope?: ScopeRef, states?: readonly MergeRequestState[]): MergeRequest[] {
+    const clauses: string[] = []
+    const values: unknown[] = []
+    if (scope) {
+      clauses.push('m.workspace_id = ? AND m.project_id = ?')
+      values.push(scope.workspaceId, scope.projectId)
+    }
+    if (states && states.length > 0) {
+      clauses.push(`m.state IN (${states.map(() => '?').join(', ')})`)
+      values.push(...states)
+    }
+    const where = clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : ''
+    const rows = this.statement(`${MERGE_REQUEST_COLUMNS}${where} ORDER BY m.created_at, m.id`).all(...values) as (MergeRequestRow & ScopeRow)[]
+    return rows.map(toMergeRequest)
+  }
+
+  /**
+   * A guarded state transition: it only lands from the expected current state,
+   * so a second coordinator (or a stale one) cannot move a request that has
+   * already moved. Terminal states refuse every transition — the record is
+   * what happened, not a row to rewrite.
+   */
+  transitionMergeRequest(id: string, from: MergeRequestState, patch: Partial<MergeRequest> & { state: MergeRequestState }, updatedAt: string): MergeRequest | undefined {
+    const result = this.statement(`UPDATE merge_requests SET state = ?, batch_id = COALESCE(?, batch_id),
+      failure_kind = COALESCE(?, failure_kind), failure_detail = COALESCE(?, failure_detail),
+      conflict_files = COALESCE(?, conflict_files), gate_results = COALESCE(?, gate_results),
+      target_sha = COALESCE(?, target_sha), merge_commit = COALESCE(?, merge_commit),
+      claimed_by = COALESCE(?, claimed_by), fencing_token = COALESCE(?, fencing_token),
+      claim_expires_at = COALESCE(?, claim_expires_at), closed_at = COALESCE(?, closed_at), updated_at = ?
+      WHERE id = ? AND state = ?`).run(
+      patch.state,
+      patch.batchId ?? null,
+      patch.failureKind ?? null,
+      patch.failureDetail ?? null,
+      patch.conflictFiles ? JSON.stringify(patch.conflictFiles) : null,
+      patch.gateResults ? JSON.stringify(patch.gateResults) : null,
+      patch.targetSha ?? null,
+      patch.mergeCommit ?? null,
+      patch.claimedBy ?? null,
+      patch.fencingToken ?? null,
+      patch.claimExpiresAt ?? null,
+      patch.closedAt ?? null,
+      updatedAt,
+      id,
+      from,
+    )
+    return result.changes === 1 ? this.mergeRequest(id) : undefined
+  }
+
+  /**
+   * Releases a request held against a protected target. Guarded on
+   * `awaiting_approval`, so approving twice approves once and the second
+   * approver finds it already released — the recorded approver is whoever
+   * actually opened the gate.
+   */
+  approveMergeRequest(id: string, approvedBy: string, approvedAt: string): MergeRequest | undefined {
+    const result = this.statement(`UPDATE merge_requests SET state = 'open', approved_by = ?, approved_at = ?, updated_at = ?
+      WHERE id = ? AND state = 'awaiting_approval'`).run(approvedBy, approvedAt, approvedAt, id)
+    return result.changes === 1 ? this.mergeRequest(id) : undefined
+  }
+
+  insertMergeBatch(batch: MergeBatch): void {
+    this.statement(`INSERT INTO merge_batches
+      (id, workspace_id, project_id, target_branch, target_sha, merge_request_ids, state, isolation_of, created_at, updated_at)
+      VALUES (@id, @workspaceId, @projectId, @targetBranch, @targetSha, @mergeRequestIds, @state, @isolationOf, @createdAt, @updatedAt)`).run({
+      id: batch.id,
+      workspaceId: batch.scope.workspaceId,
+      projectId: batch.scope.projectId,
+      targetBranch: batch.targetBranch,
+      targetSha: batch.targetSha,
+      mergeRequestIds: JSON.stringify(batch.mergeRequestIds),
+      state: batch.state,
+      isolationOf: batch.isolationOf ?? null,
+      createdAt: batch.createdAt,
+      updatedAt: batch.updatedAt,
+    })
+  }
+
+  mergeBatch(id: string): MergeBatch | undefined {
+    const row = this.statement(`${MERGE_BATCH_COLUMNS} AND b.id = ?`).get(id) as (MergeBatchRow & ScopeRow) | undefined
+    return row ? toMergeBatch(row) : undefined
+  }
+
+  /** Every batch in scope, newest last — the queue's own history, and the branch graph's rows. */
+  listMergeBatches(scope: ScopeRef, states?: readonly MergeBatch['state'][]): MergeBatch[] {
+    const values: unknown[] = [scope.workspaceId, scope.projectId]
+    let where = ' AND b.workspace_id = ? AND b.project_id = ?'
+    if (states && states.length > 0) {
+      where += ` AND b.state IN (${states.map(() => '?').join(', ')})`
+      values.push(...states)
+    }
+    const rows = this.statement(`${MERGE_BATCH_COLUMNS}${where} ORDER BY b.created_at, b.id`).all(...values) as (MergeBatchRow & ScopeRow)[]
+    return rows.map(toMergeBatch)
+  }
+
+  patchMergeBatch(id: string, patch: { state: MergeBatch['state'] }, updatedAt: string): MergeBatch | undefined {
+    const result = this.statement('UPDATE merge_batches SET state = ?, updated_at = ? WHERE id = ?').run(patch.state, updatedAt, id)
+    return result.changes === 1 ? this.mergeBatch(id) : undefined
+  }
+
+  /** Convoys are created idempotently: a work item naming one is enough to bring it into being. */
+  upsertConvoy(convoy: ConvoyRecord): void {
+    this.statement(`INSERT INTO convoys (id, workspace_id, project_id, state, closed_by, closed_at, created_at)
+      VALUES (@id, @workspaceId, @projectId, @state, @closedBy, @closedAt, @createdAt)
+      ON CONFLICT(id) DO NOTHING`).run({
+      id: convoy.id,
+      workspaceId: convoy.scope.workspaceId,
+      projectId: convoy.scope.projectId,
+      state: convoy.state,
+      closedBy: convoy.closedBy ?? null,
+      closedAt: convoy.closedAt ?? null,
+      createdAt: convoy.createdAt,
+    })
+  }
+
+  convoy(id: string): ConvoyRecord | undefined {
+    const row = this.statement(`${CONVOY_COLUMNS} AND c.id = ?`).get(id) as (ConvoyRow & ScopeRow) | undefined
+    return row ? toConvoy(row) : undefined
+  }
+
+  listConvoys(scope?: ScopeRef, states?: readonly ConvoyRecord['state'][]): ConvoyRecord[] {
+    const clauses: string[] = []
+    const values: unknown[] = []
+    if (scope) {
+      clauses.push('c.workspace_id = ? AND c.project_id = ?')
+      values.push(scope.workspaceId, scope.projectId)
+    }
+    if (states && states.length > 0) {
+      clauses.push(`c.state IN (${states.map(() => '?').join(', ')})`)
+      values.push(...states)
+    }
+    const where = clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : ''
+    const rows = this.statement(`${CONVOY_COLUMNS}${where} ORDER BY c.created_at, c.id`).all(...values) as (ConvoyRow & ScopeRow)[]
+    return rows.map(toConvoy)
+  }
+
+  /** The guarded closure: only an active convoy closes, so the second scanner to arrive finds it already shut. */
+  closeConvoy(id: string, closedBy: string, closedAt: string): ConvoyRecord | undefined {
+    return this.transitionConvoy(id, 'closed', closedBy, closedAt)
+  }
+
+  /** The operator's forced closure: same guard, different terminal state — how it closed is part of the record. */
+  forceCloseConvoy(id: string, closedBy: string, closedAt: string): ConvoyRecord | undefined {
+    return this.transitionConvoy(id, 'forced', closedBy, closedAt)
+  }
+
+  private transitionConvoy(id: string, to: ConvoyRecord['state'], closedBy: string, closedAt: string): ConvoyRecord | undefined {
+    const result = this.statement(`UPDATE convoys SET state = ?, closed_by = ?, closed_at = ?
+      WHERE id = ? AND state = 'active'`).run(to, closedBy, closedAt, id)
+    return result.changes === 1 ? this.convoy(id) : undefined
   }
 
   /** Statements are compiled once and reused; re-preparing dominates the cost of small queries. */

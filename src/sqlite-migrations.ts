@@ -1,4 +1,4 @@
-export const schemaVersion = 8
+export const schemaVersion = 12
 
 export const migrations: Record<number, string> = {
   1: `
@@ -199,5 +199,100 @@ export const migrations: Record<number, string> = {
       captured_at TEXT
     );
     CREATE INDEX IF NOT EXISTS sessions_scope_idx ON sessions(workspace_id, project_id, started_at);
+  `,
+  9: `
+    -- Phase 7: the verified merge queue. Terminal states are immutable — a
+    -- landed request is a record of what shipped, not a row to be edited.
+    CREATE TABLE IF NOT EXISTS merge_requests (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      work_item_id TEXT,
+      run_id TEXT,
+      source_branch TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      target_sha TEXT NOT NULL,
+      batch_id TEXT,
+      state TEXT NOT NULL,
+      failure_kind TEXT,
+      failure_detail TEXT,
+      conflict_files TEXT,
+      gate_results TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      closed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS merge_requests_state_idx ON merge_requests(workspace_id, project_id, state, created_at);
+    CREATE TABLE IF NOT EXISTS merge_batches (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      target_sha TEXT NOT NULL,
+      merge_request_ids TEXT NOT NULL,
+      state TEXT NOT NULL,
+      isolation_of TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    -- A convoy is the WorkItem grouping that must land together; closure is a
+    -- guarded transition so it happens exactly once no matter who scans.
+    CREATE TABLE IF NOT EXISTS convoys (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      closed_by TEXT,
+      closed_at TEXT,
+      created_at TEXT NOT NULL
+    );
+  `,
+  10: `
+    -- Phase 7 exit gate: a protected target is approval-gated. The request is
+    -- held in 'awaiting_approval' before any integration happens, so nothing is
+    -- merged, gated, or pushed toward a protected branch until an approver
+    -- releases it — and who released it stays on the record.
+    ALTER TABLE merge_requests ADD COLUMN protected_target INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE merge_requests ADD COLUMN approved_by TEXT;
+    ALTER TABLE merge_requests ADD COLUMN approved_at TEXT;
+  `,
+  11: `
+    -- Phase 7 §6.3: the rest of the MergeRequest schema. What was asked for
+    -- (source_commit), what actually shipped (merge_commit), and the claim that
+    -- authorized the work (claimant + fencing token), so a merge is auditable
+    -- end to end rather than only by its final state.
+    ALTER TABLE merge_requests ADD COLUMN source_commit TEXT;
+    ALTER TABLE merge_requests ADD COLUMN merge_commit TEXT;
+    ALTER TABLE merge_requests ADD COLUMN claimed_by TEXT;
+    ALTER TABLE merge_requests ADD COLUMN fencing_token INTEGER;
+    ALTER TABLE merge_requests ADD COLUMN claim_expires_at TEXT;
+  `,
+  12: `
+    -- The original table-level UNIQUE(resource_type, resource_id, state) meant a
+    -- resource could hold only ONE released lease for all time, so anything
+    -- leased more than once collided the second time it was released. A run is
+    -- leased once (its id is the resource), so nothing noticed; a merge target is
+    -- leased every pass, and the failed release left the lease active forever.
+    -- The invariant actually wanted is one ACTIVE lease per resource, which is a
+    -- partial index — and history stays queryable.
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE leases_rebuilt (
+      id TEXT PRIMARY KEY,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL REFERENCES actors(id),
+      fencing_token INTEGER NOT NULL,
+      acquired_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      state TEXT NOT NULL
+    );
+    INSERT INTO leases_rebuilt (id, resource_type, resource_id, owner_actor_id, fencing_token, acquired_at, expires_at, state)
+      SELECT id, resource_type, resource_id, owner_actor_id, fencing_token, acquired_at, expires_at, state FROM leases;
+    DROP TABLE leases;
+    ALTER TABLE leases_rebuilt RENAME TO leases;
+    CREATE UNIQUE INDEX leases_active_idx ON leases(resource_type, resource_id) WHERE state = 'active';
+    CREATE INDEX leases_history_idx ON leases(resource_type, resource_id, fencing_token);
+    PRAGMA foreign_keys = ON;
   `,
 }

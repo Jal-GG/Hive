@@ -21,7 +21,7 @@ describe('Phase 8 parity and release foundations', () => {
     workflows.trigger(actor, harness.scope, { id: 'mcp:1', kind: 'manual', workflowId: 'mcp-flow' })
     const server = new ControlMcpServer({ ledger: harness.ledger, workflows, observability: new ObservabilityService({ ledger: harness.ledger }), scope: harness.scope }, actor)
     const names = (server.tools() as Array<{ name: string }>).map((tool) => tool.name)
-    expect(names).toEqual(['control_workflows', 'control_workflow_runs', 'control_workflow_schedules', 'control_triggers', 'control_metrics'])
+    expect(names).toEqual(['control_workflows', 'control_workflow_runs', 'control_workflow_schedules', 'control_triggers', 'control_skills', 'control_metrics', 'control_admission'])
     const result = server.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'control_workflow_runs' } })
     expect(result?.error).toBeUndefined()
     expect(JSON.parse((result?.result as { content: Array<{ text: string }> }).content[0].text)).toHaveLength(1)

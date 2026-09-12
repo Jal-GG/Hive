@@ -96,14 +96,39 @@ export class WorkflowService {
       const existing = this.ledger.workflowRunByTrigger(input.id)
       return { trigger: this.recordDuplicate(scope, input, existing?.id), run: existing, duplicate: true }
     }
-    const workItemIds = definition.steps.map((step) => this.board.create(actor, scope, {
-      title: step.title, description: step.description, priority: step.priority, issueType: step.issueType as IssueType | undefined,
-      metadata: { workflowId: definition.id, workflowVersion: definition.version, workflowStepId: step.id },
-    }).id)
-    const completed = this.ledger.updateWorkflowRun(run.id, 'completed', timestamp, workItemIds, timestamp)
+    const created: string[] = []
+    try {
+      for (const step of definition.steps) {
+        created.push(this.board.create(actor, scope, {
+          title: step.title, description: step.description, priority: step.priority, issueType: step.issueType as IssueType | undefined,
+          metadata: { workflowId: definition.id, workflowVersion: definition.version, workflowStepId: step.id },
+        }).id)
+      }
+    } catch (error) {
+      // A step that cannot enqueue must not leave a run stuck in `queued` with no
+      // work in it — that is a run that looks in-flight forever and cannot be
+      // retried. The run is closed as failed, the reason is written where an
+      // operator looks for it, and the caller gets a named error rather than a
+      // bare 500 (§7's bounded failure behaviour).
+      const failedAt = this.now().toISOString()
+      this.ledger.updateWorkflowRun(run.id, 'failed', failedAt, created, failedAt)
+      const detail = error instanceof Error ? error.message : String(error)
+      this.ledger.insertTrigger({
+        id: createId(),
+        scope,
+        kind: input.kind,
+        workflowId: input.workflowId,
+        payload: { reason: 'step_failed', detail: detail.slice(0, 512), triggerId: input.id.slice(0, 64) },
+        state: 'rejected',
+        workflowRunId: run.id,
+        createdAt: failedAt,
+      })
+      throw new HiveError('WORKFLOW_STEP_FAILED', detail)
+    }
+    const completed = this.ledger.updateWorkflowRun(run.id, 'completed', timestamp, created, timestamp)
     const accepted: TriggerRecord = { id: input.id, scope, kind: input.kind, workflowId: input.workflowId, payload: input.payload ?? {}, state: 'accepted', workflowRunId: run.id, createdAt: timestamp }
     this.ledger.insertTrigger(accepted)
-    return { trigger: accepted, run: completed ?? { ...run, state: 'completed', workItemIds, completedAt: timestamp }, duplicate: false }
+    return { trigger: accepted, run: completed ?? { ...run, state: 'completed', workItemIds: created, completedAt: timestamp }, duplicate: false }
   }
 
   cancel(actor: ActorContext, runId: string): WorkflowRun {

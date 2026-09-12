@@ -5,7 +5,7 @@ import { WorkflowService } from '../../workflow.js'
 import { JsonRpcRequest, JsonRpcResponse } from './context-mcp-server.js'
 
 const protocolVersion = '2024-11-05'
-const tools = ['workflows', 'workflow_runs', 'workflow_schedules', 'triggers', 'metrics'] as const
+const tools = ['workflows', 'workflow_runs', 'workflow_schedules', 'triggers', 'skills', 'metrics', 'admission'] as const
 
 type ControlTool = (typeof tools)[number]
 
@@ -48,6 +48,8 @@ export class ControlMcpServer {
       : tool === 'workflow_runs' ? this.surfaces.ledger.listWorkflowRuns(this.surfaces.scope)
       : tool === 'workflow_schedules' ? this.surfaces.workflows.schedules(this.surfaces.scope)
       : tool === 'triggers' ? this.surfaces.ledger.listTriggers(this.surfaces.scope)
+      : tool === 'skills' ? this.surfaces.ledger.listSkills(this.surfaces.scope)
+      : tool === 'admission' ? this.surfaces.workflows.admissionState()
       : this.surfaces.observability.metrics(this.actor, this.surfaces.scope)
     return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(data) }] } }
   }

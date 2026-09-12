@@ -183,4 +183,29 @@ describe('trigger admission (§5.7)', () => {
     expect(workflows.admissionPolicy()).toEqual({})
     harness.close()
   })
+
+  /**
+   * Found by running the ingress as a process, not by these tests: an actor that
+   * could dispatch but not create work produced a 500 and left the run stuck in
+   * `queued` with no work items, where a later retry read as a clean duplicate.
+   */
+  it('closes the run as failed, and records why, when a step cannot enqueue', () => {
+    const operator = testActor('operator', capabilities)
+    const dispatcher = testActor('integration', ['work:dispatch'])
+    const harness = workHarness([operator, dispatcher])
+    const workflows = new WorkflowService({ ledger: harness.ledger, board: harness.board, now: harness.clock.now })
+    workflows.register(operator, definition())
+
+    expect(() => workflows.trigger(dispatcher, harness.scope, { id: 'no-mutate', kind: 'github', workflowId: 'gate-flow' }))
+      .toThrowError(/work:mutate/)
+
+    const runs = harness.ledger.listWorkflowRuns(harness.scope)
+    expect(runs).toHaveLength(1)
+    expect(runs[0].state).toBe('failed')
+    expect(harness.board.list(operator, harness.scope)).toHaveLength(0)
+
+    const history = harness.ledger.listTriggers(harness.scope)
+    expect(history.some((record) => record.state === 'rejected' && record.payload.reason === 'step_failed')).toBe(true)
+    harness.close()
+  })
 })

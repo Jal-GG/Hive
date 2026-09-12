@@ -142,12 +142,36 @@ app.whenReady().then(async () => {
       if (!fleet?.ok || !Array.isArray(fleet.data)) throw new Error(`fleet browse failed: ${JSON.stringify(fleet)}`)
       steps.push('fleet browsed over IPC')
 
+      // The Phase 8 control plane, driven the way the renderer drives it.
+      const registered = (await page.executeJavaScript(
+        'window.hive.control.invoke("register", { definition: { id: "smoke-flow", version: "1.0.0", name: "Smoke", description: "smoke", enabled: true, steps: [{ id: "one", type: "create_work", title: "Smoke work" }] } })',
+      )) as { ok: boolean }
+      if (!registered?.ok) throw new Error(`control register failed: ${JSON.stringify(registered)}`)
+      const triggered = (await page.executeJavaScript('window.hive.control.invoke("trigger", { id: "smoke:1", workflowId: "smoke-flow" })')) as { ok: boolean; data?: { run?: { state: string } } }
+      if (!triggered?.ok) throw new Error(`control trigger failed: ${JSON.stringify(triggered)}`)
+      if (triggered.data?.run?.state !== 'completed') throw new Error(`workflow run is ${triggered.data?.run?.state}, expected completed`)
+      steps.push('workflow registered and triggered over the control channels')
+
+      // Bring the ingress panel in front, so the renderer's own control reads run
+      // and any bridge mistake shows up in the error check below. A panel that is
+      // never opened is a panel that is never verified.
+      const openedIngress = (await page.executeJavaScript(
+        `(() => {
+          const button = [...document.querySelectorAll('button')].find((candidate) => candidate.textContent?.trim() === 'Ingress')
+          if (!button) return false
+          button.click()
+          return true
+        })()`,
+      )) as boolean
+      if (!openedIngress) throw new Error('the Ingress tab is not present in the sidebar')
+      steps.push('ingress panel opened')
+
       // The renderer's own view model runs on its own schedule, so the raw
       // invokes above cannot prove the UI is healthy. Wait for it to settle and
       // fail on a bridge error rendered into the page: that is exactly how a
       // doubled channel (`hive:runtime:hive:runtime:runs`) reached an operator
       // as UNKNOWN_CHANNEL while every step above still passed.
-      await new Promise((resolve) => setTimeout(resolve, 750))
+      await new Promise((resolve) => setTimeout(resolve, 1000))
       const renderedText = (await page.executeJavaScript('document.body.innerText')) as string
       const surfaced = renderedText.split('\n').filter((line) => /UNKNOWN_CHANNEL|INTERNAL_ERROR|SCOPE_NOT_FOUND/.test(line))
       if (surfaced.length > 0) throw new Error(`renderer surfaced a bridge error: ${surfaced.join(' | ')}`)

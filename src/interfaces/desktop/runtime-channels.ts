@@ -40,6 +40,19 @@ export const mergeControlOperationNames: readonly string[] = ['enqueue', 'prepar
 export const mergeIpcPrefix = 'hive:merge:'
 
 /**
+ * The Phase 8 control plane on the desktop (§7 Phase 8 "MCP/CLI/desktop parity"):
+ * the same workflow, trigger, schedule, skill, and telemetry state the CLI and
+ * MCP serve, so an operator sees one truth rather than three views of it.
+ */
+export const controlIpcPrefix = 'hive:control:'
+
+/** Read-only views: workflows, their runs, ingress history, schedules, skills, metrics, policy. */
+export const controlBrowseOperationNames: readonly string[] = ['workflows', 'runs', 'triggers', 'schedules', 'skills', 'metrics', 'admission']
+
+/** Operations that change state. Each is capability-checked in the service, not here. */
+export const controlControlOperationNames: readonly string[] = ['register', 'trigger', 'cancel', 'tick', 'pause', 'resume', 'schedule', 'schedule-state']
+
+/**
  * The renderer-safe half of the runtime IPC surface: channel names, request and
  * bridge shapes, and nothing else.
  *

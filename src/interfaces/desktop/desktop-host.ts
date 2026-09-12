@@ -17,9 +17,13 @@ import { RuntimeIpcRegistrar, WebContentsSender } from './runtime-channels.js'
 import { registerRuntimeIpc, RuntimeStreamBridge } from './runtime-ipc.js'
 import { registerWorkIpc } from './work-ipc.js'
 import { registerMergeIpc } from './merge-ipc.js'
+import { registerControlIpc } from './control-ipc.js'
 import { MergeCoordinator } from '../../merge/coordinator.js'
 import { ConvoyService } from '../../merge/convoy.js'
 import { commandGateRunner, GateDefinition } from '../../merge/gates.js'
+import { ObservabilityService } from '../../observability.js'
+import { WorkflowService } from '../../workflow.js'
+import type { TriggerAdmissionPolicy } from '../../admission.js'
 
 /**
  * What the desktop main process needs before it can show anything: a repo to run
@@ -42,6 +46,8 @@ export interface DesktopHostOptions {
    * branch from a button (§7 Phase 7).
    */
   merge?: { remote: string; gates: readonly GateDefinition[]; protectedBranches?: readonly string[] }
+  /** §5.7 ingress policy. Absent admits everything; telemetry stays opt-in (§7.0). */
+  triggers?: { admission?: TriggerAdmissionPolicy; telemetry?: boolean }
 }
 
 /**
@@ -134,6 +140,15 @@ export function startDesktopHost(options: DesktopHostOptions, actor: ActorContex
     board,
   })
   const convoys = new ConvoyService({ ledger, board, mail, scope: workScope })
+  // The Phase 8 plane, over the same ledger as everything else: the desktop's
+  // workflow state is the CLI's workflow state, not a parallel copy of it.
+  const observability = new ObservabilityService({ ledger, enabled: options.triggers?.telemetry === true })
+  const workflows = new WorkflowService({
+    ledger,
+    board,
+    admission: options.triggers?.admission,
+    spend: (scope) => observability.costUsd(actor, scope),
+  })
 
   return {
     host,
@@ -146,6 +161,7 @@ export function startDesktopHost(options: DesktopHostOptions, actor: ActorContex
       ...registerContextIpc(registrar, context, actor),
       ...registerWorkIpc(registrar, { scope: workScope, board, mail, handoffs, packets, ledger }, actor),
       ...registerMergeIpc(registrar, { scope: workScope, ledger, queue, convoys, configured: options.merge !== undefined }, actor),
+      ...registerControlIpc(registrar, { scope: workScope, ledger, workflows, observability }, actor),
       ...stream.registerControl(registrar),
     ],
     recover: () => host.recover(actor),

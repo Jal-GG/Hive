@@ -27,6 +27,11 @@ import {
   SessionRecord,
   ConvoyRecord,
   SkillRecord,
+  WorkflowDefinition,
+  WorkflowRun,
+  TriggerRecord,
+  ObservationMetric,
+  WorkflowSchedule,
   WorkDependency,
   WorkItem,
   WorkItemStatus,
@@ -265,6 +270,41 @@ interface SkillRow extends ScopeRow {
   installed_by: string
   installed_at: string
   updated_at: string
+}
+
+interface WorkflowDefinitionRow {
+  id: string
+  version: string
+  name: string
+  description: string
+  steps: string
+  enabled: number
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+interface WorkflowRunRow extends ScopeRow {
+  id: string
+  workflow_id: string
+  workflow_version: string
+  trigger_id: string
+  state: WorkflowRun['state']
+  work_item_ids: string
+  created_at: string
+  updated_at: string
+  cancelled_at: string | null
+  completed_at: string | null
+}
+
+interface TriggerRecordRow extends ScopeRow {
+  id: string
+  kind: TriggerRecord['kind']
+  workflow_id: string
+  payload: string
+  state: TriggerRecord['state']
+  workflow_run_id: string | null
+  created_at: string
 }
 
 function toSkill(row: SkillRow): SkillRecord {
@@ -725,11 +765,22 @@ export class Ledger {
     return workspaceId
   }
 
+  /** Lookup by human name: bootstrap needs to tell "absent" from "already created" (§7 Phase 1). */
+  workspaceByName(name: string): string | undefined {
+    const row = this.statement('SELECT id FROM workspaces WHERE name = ?').get(name) as { id: string } | undefined
+    return row?.id
+  }
+
   createProject(workspaceId: string, name: string): string {
     validateScopeName(name, 'project name')
     const projectId = createId()
     this.statement('INSERT INTO projects(id, workspace_id, name, created_at) VALUES (?, ?, ?, ?)').run(projectId, workspaceId, name, this.timestamp())
     return projectId
+  }
+
+  projectByName(workspaceId: string, name: string): string | undefined {
+    const row = this.statement('SELECT id FROM projects WHERE workspace_id = ? AND name = ?').get(workspaceId, name) as { id: string } | undefined
+    return row?.id
   }
 
   createActor(actor: ActorContext): void {
@@ -1866,6 +1917,144 @@ export class Ledger {
     const result = this.statement('DELETE FROM skills WHERE workspace_id = ? AND project_id = ? AND id = ?')
       .run(scope.workspaceId, scope.projectId, id)
     return result.changes === 1
+  }
+
+  // --- Workflows and trigger history (§7 Phase 8, C20) ---
+
+  upsertWorkflow(definition: WorkflowDefinition): void {
+    this.statement(`INSERT INTO workflow_definitions
+      (id, version, name, description, steps, enabled, created_by, created_at, updated_at)
+      VALUES (@id, @version, @name, @description, @steps, @enabled, @createdBy, @createdAt, @updatedAt)
+      ON CONFLICT(id, version) DO UPDATE SET name = excluded.name, description = excluded.description,
+        steps = excluded.steps, enabled = excluded.enabled, updated_at = excluded.updated_at`).run({
+      id: definition.id, version: definition.version, name: definition.name, description: definition.description,
+      steps: JSON.stringify(definition.steps), enabled: definition.enabled ? 1 : 0, createdBy: definition.createdBy,
+      createdAt: definition.createdAt, updatedAt: definition.updatedAt,
+    })
+  }
+
+  workflow(id: string, version?: string): WorkflowDefinition | undefined {
+    const row = (version === undefined
+      ? this.statement('SELECT * FROM workflow_definitions WHERE id = ? ORDER BY version DESC LIMIT 1').get(id)
+      : this.statement('SELECT * FROM workflow_definitions WHERE id = ? AND version = ?').get(id, version)) as WorkflowDefinitionRow | undefined
+    return row ? { id: row.id, version: row.version, name: row.name, description: row.description,
+      steps: JSON.parse(row.steps), enabled: row.enabled === 1, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at } : undefined
+  }
+
+  listWorkflows(): WorkflowDefinition[] {
+    return (this.statement('SELECT * FROM workflow_definitions ORDER BY id, version').all() as WorkflowDefinitionRow[]).map((row) => ({
+      id: row.id, version: row.version, name: row.name, description: row.description, steps: JSON.parse(row.steps),
+      enabled: row.enabled === 1, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at,
+    }))
+  }
+
+  insertWorkflowRun(run: WorkflowRun): boolean {
+    const result = this.statement(`INSERT OR IGNORE INTO workflow_runs
+      (id, workspace_id, project_id, workflow_id, workflow_version, trigger_id, state, work_item_ids, created_at, updated_at, cancelled_at, completed_at)
+      VALUES (@id, @workspaceId, @projectId, @workflowId, @workflowVersion, @triggerId, @state, @workItemIds, @createdAt, @updatedAt, @cancelledAt, @completedAt)`).run({
+      id: run.id, workspaceId: run.scope.workspaceId, projectId: run.scope.projectId, workflowId: run.workflowId,
+      workflowVersion: run.workflowVersion, triggerId: run.triggerId, state: run.state, workItemIds: JSON.stringify(run.workItemIds),
+      createdAt: run.createdAt, updatedAt: run.updatedAt, cancelledAt: run.cancelledAt ?? null, completedAt: run.completedAt ?? null,
+    })
+    return result.changes === 1
+  }
+
+  workflowRun(id: string): WorkflowRun | undefined {
+    const row = this.statement(`SELECT r.*, w.name AS workspace_name, p.name AS project_name FROM workflow_runs r
+      JOIN workspaces w ON w.id = r.workspace_id JOIN projects p ON p.id = r.project_id WHERE r.id = ?`).get(id) as (WorkflowRunRow & ScopeRow) | undefined
+    return row ? { id: row.id, scope: toScope(row), workflowId: row.workflow_id, workflowVersion: row.workflow_version,
+      triggerId: row.trigger_id, state: row.state, workItemIds: JSON.parse(row.work_item_ids), createdAt: row.created_at,
+      updatedAt: row.updated_at, cancelledAt: row.cancelled_at ?? undefined, completedAt: row.completed_at ?? undefined } : undefined
+  }
+
+  workflowRunByTrigger(triggerId: string): WorkflowRun | undefined {
+    const row = this.statement(`SELECT r.*, w.name AS workspace_name, p.name AS project_name FROM workflow_runs r
+      JOIN workspaces w ON w.id = r.workspace_id JOIN projects p ON p.id = r.project_id WHERE r.trigger_id = ?`).get(triggerId) as (WorkflowRunRow & ScopeRow) | undefined
+    return row ? { id: row.id, scope: toScope(row), workflowId: row.workflow_id, workflowVersion: row.workflow_version,
+      triggerId: row.trigger_id, state: row.state, workItemIds: JSON.parse(row.work_item_ids), createdAt: row.created_at,
+      updatedAt: row.updated_at, cancelledAt: row.cancelled_at ?? undefined, completedAt: row.completed_at ?? undefined } : undefined
+  }
+
+  listWorkflowRuns(scope: ScopeRef, states?: readonly WorkflowRun['state'][]): WorkflowRun[] {
+    const values: unknown[] = [scope.workspaceId, scope.projectId]
+    let sql = `SELECT r.*, w.name AS workspace_name, p.name AS project_name FROM workflow_runs r JOIN workspaces w ON w.id = r.workspace_id JOIN projects p ON p.id = r.project_id WHERE r.workspace_id = ? AND r.project_id = ?`
+    if (states?.length) { sql += ` AND r.state IN (${states.map(() => '?').join(',')})`; values.push(...states) }
+    sql += ' ORDER BY r.created_at, r.id'
+    return (this.statement(sql).all(...values) as (WorkflowRunRow & ScopeRow)[]).map((row) => ({ id: row.id, scope: toScope(row), workflowId: row.workflow_id, workflowVersion: row.workflow_version, triggerId: row.trigger_id, state: row.state, workItemIds: JSON.parse(row.work_item_ids), createdAt: row.created_at, updatedAt: row.updated_at, cancelledAt: row.cancelled_at ?? undefined, completedAt: row.completed_at ?? undefined }))
+  }
+
+  updateWorkflowRun(id: string, state: WorkflowRun['state'], updatedAt: string, workItemIds: string[], completedAt?: string, cancelledAt?: string): WorkflowRun | undefined {
+    const result = this.statement(`UPDATE workflow_runs SET state = ?, updated_at = ?, work_item_ids = ?, completed_at = ?, cancelled_at = ? WHERE id = ? AND state NOT IN ('cancelled', 'completed', 'failed')`).run(state, updatedAt, JSON.stringify(workItemIds), completedAt ?? null, cancelledAt ?? null, id)
+    return result.changes === 1 ? this.workflowRun(id) : undefined
+  }
+
+  insertTrigger(record: TriggerRecord): boolean {
+    const result = this.statement(`INSERT OR IGNORE INTO trigger_history (id, workspace_id, project_id, kind, workflow_id, payload, state, workflow_run_id, created_at)
+      VALUES (@id, @workspaceId, @projectId, @kind, @workflowId, @payload, @state, @workflowRunId, @createdAt)`).run({
+      id: record.id, workspaceId: record.scope.workspaceId, projectId: record.scope.projectId, kind: record.kind,
+      workflowId: record.workflowId, payload: JSON.stringify(record.payload), state: record.state,
+      workflowRunId: record.workflowRunId ?? null, createdAt: record.createdAt,
+    })
+    return result.changes === 1
+  }
+
+  listTriggers(scope: ScopeRef): TriggerRecord[] {
+    return (this.statement(`SELECT t.*, w.name AS workspace_name, p.name AS project_name FROM trigger_history t JOIN workspaces w ON w.id = t.workspace_id JOIN projects p ON p.id = t.project_id WHERE t.workspace_id = ? AND t.project_id = ? ORDER BY t.created_at, t.id`).all(scope.workspaceId, scope.projectId) as (TriggerRecordRow & ScopeRow)[]).map((row) => ({ id: row.id, scope: toScope(row), kind: row.kind, workflowId: row.workflow_id, payload: JSON.parse(row.payload), state: row.state, workflowRunId: row.workflow_run_id ?? undefined, createdAt: row.created_at }))
+  }
+
+  insertObservationMetric(metric: ObservationMetric): void {
+    this.statement(`INSERT INTO observation_metrics (id, workspace_id, project_id, kind, name, value, unit, labels, recorded_at)
+      VALUES (@id, @workspaceId, @projectId, @kind, @name, @value, @unit, @labels, @recordedAt)`).run({
+      id: metric.id, workspaceId: metric.scope.workspaceId, projectId: metric.scope.projectId, kind: metric.kind,
+      name: metric.name, value: metric.value, unit: metric.unit, labels: JSON.stringify(metric.labels), recordedAt: metric.recordedAt,
+    })
+  }
+
+  listObservationMetrics(scope: ScopeRef, kind?: ObservationMetric['kind']): ObservationMetric[] {
+    const values: unknown[] = [scope.workspaceId, scope.projectId]
+    let sql = `SELECT m.*, w.name AS workspace_name, p.name AS project_name FROM observation_metrics m JOIN workspaces w ON w.id = m.workspace_id JOIN projects p ON p.id = m.project_id WHERE m.workspace_id = ? AND m.project_id = ?`
+    if (kind) { sql += ' AND m.kind = ?'; values.push(kind) }
+    sql += ' ORDER BY m.recorded_at, m.id'
+    return (this.statement(sql).all(...values) as Array<{ id: string; kind: ObservationMetric['kind']; name: string; value: number; unit: string; labels: string; recorded_at: string } & ScopeRow>).map((row) => ({ id: row.id, scope: toScope(row), kind: row.kind, name: row.name, value: row.value, unit: row.unit, labels: JSON.parse(row.labels), recordedAt: row.recorded_at }))
+  }
+
+  // --- Workflow schedules and watches (§7 Phase 8, C20) ---
+
+  upsertWorkflowSchedule(schedule: WorkflowSchedule): void {
+    this.statement(`INSERT INTO workflow_schedules
+      (id, workspace_id, project_id, workflow_id, interval_ms, state, next_run_at, created_by, created_at, updated_at)
+      VALUES (@id, @workspaceId, @projectId, @workflowId, @intervalMs, @state, @nextRunAt, @createdBy, @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET interval_ms = excluded.interval_ms, state = excluded.state,
+        next_run_at = excluded.next_run_at, updated_at = excluded.updated_at`).run({
+      id: schedule.id, workspaceId: schedule.scope.workspaceId, projectId: schedule.scope.projectId, workflowId: schedule.workflowId,
+      intervalMs: schedule.intervalMs, state: schedule.state, nextRunAt: schedule.nextRunAt, createdBy: schedule.createdBy,
+      createdAt: schedule.createdAt, updatedAt: schedule.updatedAt,
+    })
+  }
+
+  listWorkflowSchedules(scope: ScopeRef, state?: WorkflowSchedule['state']): WorkflowSchedule[] {
+    const values: unknown[] = [scope.workspaceId, scope.projectId]
+    let sql = `SELECT s.*, w.name AS workspace_name, p.name AS project_name FROM workflow_schedules s JOIN workspaces w ON w.id = s.workspace_id JOIN projects p ON p.id = s.project_id WHERE s.workspace_id = ? AND s.project_id = ?`
+    if (state) { sql += ' AND s.state = ?'; values.push(state) }
+    sql += ' ORDER BY s.next_run_at, s.id'
+    return (this.statement(sql).all(...values) as Array<{ id: string; workflow_id: string; interval_ms: number; state: WorkflowSchedule['state']; next_run_at: string; created_by: string; created_at: string; updated_at: string } & ScopeRow>).map((row) => ({ id: row.id, scope: toScope(row), workflowId: row.workflow_id, intervalMs: row.interval_ms, state: row.state, nextRunAt: row.next_run_at, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }))
+  }
+
+  workflowSchedule(id: string): WorkflowSchedule | undefined {
+    return this.listAllWorkflowSchedules().find((schedule) => schedule.id === id)
+  }
+
+  dueWorkflowSchedules(at: string): WorkflowSchedule[] {
+    return this.listAllWorkflowSchedules().filter((schedule) => schedule.state === 'enabled' && schedule.nextRunAt <= at)
+  }
+
+  private listAllWorkflowSchedules(): WorkflowSchedule[] {
+    return (this.statement(`SELECT s.*, w.name AS workspace_name, p.name AS project_name FROM workflow_schedules s JOIN workspaces w ON w.id = s.workspace_id JOIN projects p ON p.id = s.project_id ORDER BY s.next_run_at, s.id`).all() as Array<{ id: string; workspace_id: string; project_id: string; workspace_name: string; project_name: string; workflow_id: string; interval_ms: number; state: WorkflowSchedule['state']; next_run_at: string; created_by: string; created_at: string; updated_at: string }>).map((row) => ({ id: row.id, scope: { workspaceId: row.workspace_id, projectId: row.project_id, workspaceName: row.workspace_name, projectName: row.project_name }, workflowId: row.workflow_id, intervalMs: row.interval_ms, state: row.state, nextRunAt: row.next_run_at, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }))
+  }
+
+  updateWorkflowSchedule(id: string, state: WorkflowSchedule['state'], nextRunAt: string, updatedAt: string): WorkflowSchedule | undefined {
+    const result = this.statement('UPDATE workflow_schedules SET state = ?, next_run_at = ?, updated_at = ? WHERE id = ?').run(state, nextRunAt, updatedAt, id)
+    return result.changes === 1 ? this.listAllWorkflowSchedules().find((schedule) => schedule.id === id) : undefined
   }
 
   /** Statements are compiled once and reused; re-preparing dominates the cost of small queries. */

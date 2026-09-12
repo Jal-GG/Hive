@@ -1,4 +1,4 @@
-export const schemaVersion = 13
+export const schemaVersion = 16
 
 export const migrations: Record<number, string> = {
   1: `
@@ -318,5 +318,79 @@ export const migrations: Record<number, string> = {
       PRIMARY KEY (workspace_id, project_id, id)
     );
     CREATE INDEX IF NOT EXISTS skills_scope_idx ON skills(workspace_id, project_id, state);
+  `,
+  14: `
+    -- Phase 8: declarative workflow definitions, runs, and idempotent trigger history.
+    CREATE TABLE IF NOT EXISTS workflow_definitions (
+      id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      steps TEXT NOT NULL,
+      enabled INTEGER NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (id, version)
+    );
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      workflow_id TEXT NOT NULL,
+      workflow_version TEXT NOT NULL,
+      trigger_id TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL,
+      work_item_ids TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      cancelled_at TEXT,
+      completed_at TEXT,
+      FOREIGN KEY (workflow_id, workflow_version) REFERENCES workflow_definitions(id, version)
+    );
+    CREATE INDEX IF NOT EXISTS workflow_runs_scope_idx ON workflow_runs(workspace_id, project_id, state, created_at);
+    CREATE TABLE IF NOT EXISTS trigger_history (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      kind TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      state TEXT NOT NULL,
+      workflow_run_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS trigger_history_scope_idx ON trigger_history(workspace_id, project_id, created_at);
+  `,
+  15: `
+    -- Phase 8: opt-in, low-cardinality observability measurements.
+    CREATE TABLE IF NOT EXISTS observation_metrics (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      kind TEXT NOT NULL,
+      name TEXT NOT NULL,
+      value REAL NOT NULL,
+      unit TEXT NOT NULL,
+      labels TEXT NOT NULL,
+      recorded_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS observation_metrics_scope_idx ON observation_metrics(workspace_id, project_id, kind, recorded_at);
+  `,
+  16: `
+    CREATE TABLE IF NOT EXISTS workflow_schedules (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      workflow_id TEXT NOT NULL,
+      interval_ms INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      next_run_at TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS workflow_schedules_due_idx ON workflow_schedules(state, next_run_at);
+    CREATE INDEX IF NOT EXISTS workflow_schedules_scope_idx ON workflow_schedules(workspace_id, project_id, state);
   `,
 }

@@ -893,3 +893,81 @@ export interface SkillDiscoveryReport {
   found: SkillManifest[]
   rejected: { path: string; reason: string }[]
 }
+
+// --- Declarative workflows and trigger history (§7 Phase 8, C20) ---
+
+export type WorkflowRunState = 'queued' | 'running' | 'cancelled' | 'completed' | 'failed'
+
+export interface WorkflowStep {
+  id: string
+  type: 'create_work'
+  title: string
+  description?: string
+  priority?: number
+  issueType?: IssueType
+  requiredSkills?: string[]
+}
+
+export interface WorkflowDefinition {
+  id: string
+  version: string
+  name: string
+  description: string
+  steps: WorkflowStep[]
+  enabled: boolean
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkflowRun {
+  id: string
+  scope: ScopeRef
+  workflowId: string
+  workflowVersion: string
+  triggerId: string
+  state: WorkflowRunState
+  workItemIds: string[]
+  createdAt: string
+  updatedAt: string
+  cancelledAt?: string
+  completedAt?: string
+}
+
+export interface TriggerRecord {
+  id: string
+  scope: ScopeRef
+  kind: 'manual' | 'webhook' | 'github' | 'slack' | 'feed' | 'schedule'
+  workflowId: string
+  payload: Record<string, unknown>
+  state: 'accepted' | 'duplicate' | 'rejected'
+  workflowRunId?: string
+  createdAt: string
+}
+
+export type ObservationMetricKind = 'provider_health' | 'usage' | 'queue'
+
+export interface ObservationMetric {
+  id: string
+  scope: ScopeRef
+  kind: ObservationMetricKind
+  name: string
+  value: number
+  unit: string
+  labels: Record<string, string>
+  recordedAt: string
+}
+
+export type WorkflowScheduleState = 'enabled' | 'disabled'
+
+export interface WorkflowSchedule {
+  id: string
+  scope: ScopeRef
+  workflowId: string
+  intervalMs: number
+  state: WorkflowScheduleState
+  nextRunAt: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}

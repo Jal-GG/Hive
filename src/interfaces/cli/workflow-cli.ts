@@ -8,13 +8,13 @@ export interface WorkflowCliSurfaces {
   workflows: WorkflowService
 }
 
-const operations = ['list', 'register', 'trigger', 'runs', 'cancel', 'triggers', 'schedules', 'schedule', 'schedule-state', 'tick'] as const
+const operations = ['list', 'register', 'trigger', 'runs', 'cancel', 'triggers', 'schedules', 'schedule', 'schedule-state', 'tick', 'pause', 'resume', 'admission'] as const
 type WorkflowOperation = (typeof operations)[number]
 
 export async function runWorkflowCli(surfaces: WorkflowCliSurfaces, actor: ActorContext, argv: readonly string[]): Promise<string> {
   const [operation, ...rest] = argv
-  if (!operation || operation === 'help' || operation === '--help') return usage()
-  if (!operations.includes(operation as WorkflowOperation)) throw new HiveError('UNKNOWN_OPERATION', `Unknown workflow operation: ${operation}\n\n${usage()}`)
+  if (!operation || operation === 'help' || operation === '--help') return workflowUsage()
+  if (!operations.includes(operation as WorkflowOperation)) throw new HiveError('UNKNOWN_OPERATION', `Unknown workflow operation: ${operation}\n\n${workflowUsage()}`)
   const scope = surfaces.ledger.resolveScope(flagValue(rest, '--workspace') ?? 'main', flagValue(rest, '--project') ?? 'hive')
 
   switch (operation as WorkflowOperation) {
@@ -39,10 +39,13 @@ export async function runWorkflowCli(surfaces: WorkflowCliSurfaces, actor: Actor
     case 'schedule': return render(surfaces.workflows.schedule(actor, { id: requireValue('--id', flagValue(rest, '--id')), workflowId: requireValue('--workflow', flagValue(rest, '--workflow')), intervalMs: Number(requireValue('--interval-ms', flagValue(rest, '--interval-ms'))), state: 'enabled', nextRunAt: requireValue('--next-run-at', flagValue(rest, '--next-run-at')), scope }))
     case 'schedule-state': return render(surfaces.workflows.setScheduleState(actor, requireValue('--id', flagValue(rest, '--id')), (flagValue(rest, '--state') ?? 'enabled') as 'enabled' | 'disabled'))
     case 'tick': return render({ triggered: surfaces.workflows.tick(actor, new Date(flagValue(rest, '--at') ?? new Date().toISOString())) })
+    case 'pause': return render({ policy: surfaces.workflows.setPaused(actor, scope, true) })
+    case 'resume': return render({ policy: surfaces.workflows.setPaused(actor, scope, false) })
+    case 'admission': return render(surfaces.workflows.admissionState())
   }
 }
 
-export function usage(): string {
+export function workflowUsage(): string {
   return [
     'Usage: hive workflow <operation> [options]',
     '',
@@ -51,7 +54,14 @@ export function usage(): string {
     '  trigger               Queue a workflow (--id, --workflow, --version, --kind)',
     '  runs                  List workflow runs',
     '  cancel                Cancel a queued or running workflow (--run)',
-    '  triggers              List idempotent trigger history',
+    '  triggers              List idempotent trigger history, refusals included',
+    '  schedules             List schedule state and next run',
+    '  schedule              Add or replace a schedule (--id, --workflow, --interval-ms, --next-run-at)',
+    '  schedule-state        Enable or disable a schedule (--id, --state enabled|disabled)',
+    '  tick                  Run due schedules once (--at)',
+    '  pause                 Refuse all trigger ingress (§5.7)',
+    '  resume                Resume trigger ingress',
+    '  admission             Show the ingress policy and circuit-breaker state',
     '',
     'Options:',
     '  --workspace <name>    Workspace name (default main)',

@@ -2057,6 +2057,18 @@ export class Ledger {
     return result.changes === 1 ? this.listAllWorkflowSchedules().find((schedule) => schedule.id === id) : undefined
   }
 
+  // --- Durable control-plane settings (§7 Phase 8) ---
+
+  setting(key: string): string | undefined {
+    const row = this.statement('SELECT value FROM control_settings WHERE key = ?').get(key) as { value: string } | undefined
+    return row?.value
+  }
+
+  setSetting(key: string, value: string, updatedAt: string): void {
+    this.statement(`INSERT INTO control_settings (key, value, updated_at) VALUES (@key, @value, @updatedAt)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run({ key, value, updatedAt })
+  }
+
   /** Statements are compiled once and reused; re-preparing dominates the cost of small queries. */
   private statement(sql: string): Database.Statement {
     let statement = this.statements.get(sql)

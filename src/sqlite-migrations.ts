@@ -1,4 +1,4 @@
-export const schemaVersion = 16
+export const schemaVersion = 17
 
 export const migrations: Record<number, string> = {
   1: `
@@ -392,5 +392,15 @@ export const migrations: Record<number, string> = {
     );
     CREATE INDEX IF NOT EXISTS workflow_schedules_due_idx ON workflow_schedules(state, next_run_at);
     CREATE INDEX IF NOT EXISTS workflow_schedules_scope_idx ON workflow_schedules(workspace_id, project_id, state);
+  `,
+  17: `
+    -- Phase 8: durable control-plane settings. An operator's trigger-ingress
+    -- policy lives here rather than in process memory so a pause issued from a
+    -- one-shot CLI invocation reaches the long-running desktop that admits.
+    CREATE TABLE IF NOT EXISTS control_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `,
 }

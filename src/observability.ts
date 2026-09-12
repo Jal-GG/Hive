@@ -56,6 +56,20 @@ export class ObservabilityService {
   queueDepth(actor: ActorContext, scope: ScopeRef, queue: string, depth: number): ObservationMetric | undefined {
     return this.record(actor, scope, { kind: 'queue', name: 'depth', value: depth, unit: 'items', labels: { queue } })
   }
+
+  /**
+   * Cost incurred in a scope, summed from recorded usage. This is the spend source
+   * a trigger policy caps against (§5.7). With telemetry disabled nothing is
+   * recorded, so this reports zero — a spend cap is only meaningful once the
+   * operator has opted into usage recording, which is stated here rather than
+   * left as a policy that silently never fires.
+   */
+  costUsd(actor: ActorContext, scope: ScopeRef): number {
+    assertCapability(actor.capabilities, 'workspace:read')
+    return this.ledger.listObservationMetrics(scope, 'usage')
+      .filter((metric) => metric.name === 'cost')
+      .reduce((total, metric) => total + metric.value, 0)
+  }
 }
 
 export interface WebhookAdapterOptions {

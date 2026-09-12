@@ -142,6 +142,17 @@ app.whenReady().then(async () => {
       if (!fleet?.ok || !Array.isArray(fleet.data)) throw new Error(`fleet browse failed: ${JSON.stringify(fleet)}`)
       steps.push('fleet browsed over IPC')
 
+      // The renderer's own view model runs on its own schedule, so the raw
+      // invokes above cannot prove the UI is healthy. Wait for it to settle and
+      // fail on a bridge error rendered into the page: that is exactly how a
+      // doubled channel (`hive:runtime:hive:runtime:runs`) reached an operator
+      // as UNKNOWN_CHANNEL while every step above still passed.
+      await new Promise((resolve) => setTimeout(resolve, 750))
+      const renderedText = (await page.executeJavaScript('document.body.innerText')) as string
+      const surfaced = renderedText.split('\n').filter((line) => /UNKNOWN_CHANNEL|INTERNAL_ERROR|SCOPE_NOT_FOUND/.test(line))
+      if (surfaced.length > 0) throw new Error(`renderer surfaced a bridge error: ${surfaced.join(' | ')}`)
+      steps.push('no bridge error rendered in the UI')
+
       console.log(`SMOKE OK: ${steps.join('; ')}`)
       desktop.close()
       app.exit(0)

@@ -89,7 +89,13 @@ export interface WebContentsSender {
  * string the renderer passes.
  */
 export interface RuntimeBridge {
-  invoke(channel: string, payload?: unknown): Promise<ResultEnvelope<unknown>>
+  /**
+   * The bare operation name (`profiles`, `runs`, `launch`) — never a channel.
+   * The preload owns the prefix and refuses anything outside its allowlist, so
+   * a caller that prefixes its own operation asks for a channel that cannot exist.
+   */
+  invoke(operation: string, payload?: unknown): Promise<ResultEnvelope<unknown>>
+  /** A full push channel, because streams are subscribed to by channel, not by operation. */
   on(channel: string, listener: (payload: unknown) => void): Unsubscribe
 }
 

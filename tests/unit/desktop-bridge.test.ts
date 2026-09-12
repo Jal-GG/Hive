@@ -7,6 +7,7 @@ import { gitRepository, tempDirectory } from '../fixtures.js'
 import { allowedChannels, createHiveWindow, type IpcRendererLike } from '../../src/interfaces/desktop/preload-bridge.js'
 import { desktopOperator, startDesktopHost } from '../../src/interfaces/desktop/desktop-host.js'
 import { runtimeIpcPrefix, runtimeStreamChannels } from '../../src/interfaces/desktop/runtime-channels.js'
+import { RuntimeViewModel } from '../../src/interfaces/desktop/runtime-view-model.js'
 
 function ok<T>(result: ResultEnvelope<T>): T {
   if (!result.ok) throw new Error(`expected success, got ${result.error.code}: ${result.error.message}`)
@@ -232,6 +233,39 @@ describe('preload bridge', () => {
 
     const missing = await main.invoke('hive:work:item', { workItemId: 'no-such-task' })
     expect(failure(missing).code).toBe('WORK_ITEM_NOT_FOUND')
+    desktop.close()
+  })
+})
+
+describe('runtime view model over the preload bridge', () => {
+  /**
+   * The renderer's own code path. The smoke test bypasses it by invoking the
+   * bridge directly, which is how a doubled channel — the view model prefixing
+   * an operation the preload prefixes again, giving
+   * `hive:runtime:hive:runtime:runs` — reached the UI as UNKNOWN_CHANNEL. This
+   * asserts the channels that actually reach the main process.
+   */
+  it('reads through bare operation names, never a doubled channel', async () => {
+    const repoRoot = gitRepository('desktop-view-model')
+    const desktop = startDesktopHost({ repoRoot, hostEnv: {} })
+    const main = new IpcMainRecorder()
+    desktop.registerIpc(main)
+    const ipc = new IpcRendererRecorder()
+    ipc.main = main
+    main.renderer = ipc
+    const hive = createHiveWindow(ipc)
+
+    const view = new RuntimeViewModel({ bridge: hive.runtime })
+    await view.refresh()
+
+    expect(ipc.invocations.map((invocation) => invocation.channel)).toEqual([
+      `${runtimeIpcPrefix}profiles`,
+      `${runtimeIpcPrefix}runs`,
+    ])
+    const state = view.state()
+    expect(state.error).toBeUndefined()
+    expect(state.profiles.some((profile) => profile.id === fakeProfileId)).toBe(true)
+    view.dispose()
     desktop.close()
   })
 })

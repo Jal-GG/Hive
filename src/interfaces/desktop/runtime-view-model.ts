@@ -1,5 +1,5 @@
 import { Run, RunState, RuntimeStatus } from '../../contracts.js'
-import { RuntimeBridge, RuntimeStreamData, runtimeIpcPrefix, runtimeStreamChannels, type Unsubscribe } from './runtime-channels.js'
+import { RuntimeBridge, RuntimeStreamData, runtimeStreamChannels, type Unsubscribe } from './runtime-channels.js'
 
 /** Same bound as a session's scrollback: a terminal view keeps a tail, not a history. */
 const defaultBufferBytes = 256 * 1024
@@ -168,7 +168,10 @@ export class RuntimeViewModel {
   }
 
   private async read(operation: string, payload: Record<string, unknown> = {}): Promise<unknown> {
-    const result = await this.bridge.invoke(`${runtimeIpcPrefix}${operation}`, payload)
+    // The operation, not the channel: the preload owns the prefix and refuses
+    // anything it does not allowlist. Passing a prefixed name here produced
+    // `hive:runtime:hive:runtime:<op>` and an UNKNOWN_CHANNEL for every read.
+    const result = await this.bridge.invoke(operation, payload)
     if (!result.ok) {
       this.update({ error: `${result.error.code}: ${result.error.message}` })
       return undefined

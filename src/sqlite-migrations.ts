@@ -1,4 +1,4 @@
-export const schemaVersion = 12
+export const schemaVersion = 17
 
 export const migrations: Record<number, string> = {
   1: `
@@ -294,5 +294,113 @@ export const migrations: Record<number, string> = {
     CREATE UNIQUE INDEX leases_active_idx ON leases(resource_type, resource_id) WHERE state = 'active';
     CREATE INDEX leases_history_idx ON leases(resource_type, resource_id, fencing_token);
     PRAGMA foreign_keys = ON;
+  `,
+  13: `
+    -- Phase 8: the skill registry. The files on disk under the registry root are
+    -- the content; this table is the index that makes them discoverable,
+    -- versioned, and installable/uninstallable as a unit.
+    CREATE TABLE IF NOT EXISTS skills (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      version TEXT NOT NULL,
+      description TEXT NOT NULL,
+      tags TEXT NOT NULL,
+      body TEXT NOT NULL,
+      state TEXT NOT NULL,
+      path TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      source TEXT NOT NULL,
+      installed_by TEXT NOT NULL,
+      installed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, project_id, id)
+    );
+    CREATE INDEX IF NOT EXISTS skills_scope_idx ON skills(workspace_id, project_id, state);
+  `,
+  14: `
+    -- Phase 8: declarative workflow definitions, runs, and idempotent trigger history.
+    CREATE TABLE IF NOT EXISTS workflow_definitions (
+      id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      steps TEXT NOT NULL,
+      enabled INTEGER NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (id, version)
+    );
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      workflow_id TEXT NOT NULL,
+      workflow_version TEXT NOT NULL,
+      trigger_id TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL,
+      work_item_ids TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      cancelled_at TEXT,
+      completed_at TEXT,
+      FOREIGN KEY (workflow_id, workflow_version) REFERENCES workflow_definitions(id, version)
+    );
+    CREATE INDEX IF NOT EXISTS workflow_runs_scope_idx ON workflow_runs(workspace_id, project_id, state, created_at);
+    CREATE TABLE IF NOT EXISTS trigger_history (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      kind TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      state TEXT NOT NULL,
+      workflow_run_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS trigger_history_scope_idx ON trigger_history(workspace_id, project_id, created_at);
+  `,
+  15: `
+    -- Phase 8: opt-in, low-cardinality observability measurements.
+    CREATE TABLE IF NOT EXISTS observation_metrics (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      kind TEXT NOT NULL,
+      name TEXT NOT NULL,
+      value REAL NOT NULL,
+      unit TEXT NOT NULL,
+      labels TEXT NOT NULL,
+      recorded_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS observation_metrics_scope_idx ON observation_metrics(workspace_id, project_id, kind, recorded_at);
+  `,
+  16: `
+    CREATE TABLE IF NOT EXISTS workflow_schedules (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      workflow_id TEXT NOT NULL,
+      interval_ms INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      next_run_at TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS workflow_schedules_due_idx ON workflow_schedules(state, next_run_at);
+    CREATE INDEX IF NOT EXISTS workflow_schedules_scope_idx ON workflow_schedules(workspace_id, project_id, state);
+  `,
+  17: `
+    -- Phase 8: durable control-plane settings. An operator's trigger-ingress
+    -- policy lives here rather than in process memory so a pause issued from a
+    -- one-shot CLI invocation reaches the long-running desktop that admits.
+    CREATE TABLE IF NOT EXISTS control_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `,
 }

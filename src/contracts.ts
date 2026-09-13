@@ -853,3 +853,121 @@ export interface ConvoyScanReport {
   /** Items blocked behind work that can no longer proceed. */
   stranded: number
 }
+
+// --- Skills (§7 Phase 8) ---
+
+export type SkillState = 'installed' | 'disabled'
+
+/**
+ * What a skill declares about itself: the installable unit, before it has a
+ * home. `id` doubles as the directory name, so it is validated to a strict
+ * charset — a skill can never name a path it should not occupy.
+ */
+export interface SkillManifest {
+  id: string
+  name: string
+  version: string
+  description: string
+  /** Match tags; a task that needs one of these gets the skill in its packet. */
+  tags: string[]
+  /** The instructions handed to an agent that receives this skill. */
+  body: string
+}
+
+/** An installed skill: its manifest, where it landed, and who put it there. */
+export interface SkillRecord extends SkillManifest {
+  scope: ScopeRef
+  state: SkillState
+  /** Path to the skill's directory, always inside the registry root. */
+  path: string
+  sha256: string
+  /** Where it came from: a directory scan, an operator, an integration. */
+  source: string
+  installedBy: string
+  installedAt: string
+  updatedAt: string
+}
+
+/** What one discovery pass found on disk, and why it rejected what it rejected. */
+export interface SkillDiscoveryReport {
+  found: SkillManifest[]
+  rejected: { path: string; reason: string }[]
+}
+
+// --- Declarative workflows and trigger history (§7 Phase 8, C20) ---
+
+export type WorkflowRunState = 'queued' | 'running' | 'cancelled' | 'completed' | 'failed'
+
+export interface WorkflowStep {
+  id: string
+  type: 'create_work'
+  title: string
+  description?: string
+  priority?: number
+  issueType?: IssueType
+  requiredSkills?: string[]
+}
+
+export interface WorkflowDefinition {
+  id: string
+  version: string
+  name: string
+  description: string
+  steps: WorkflowStep[]
+  enabled: boolean
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkflowRun {
+  id: string
+  scope: ScopeRef
+  workflowId: string
+  workflowVersion: string
+  triggerId: string
+  state: WorkflowRunState
+  workItemIds: string[]
+  createdAt: string
+  updatedAt: string
+  cancelledAt?: string
+  completedAt?: string
+}
+
+export interface TriggerRecord {
+  id: string
+  scope: ScopeRef
+  kind: 'manual' | 'webhook' | 'github' | 'slack' | 'feed' | 'schedule'
+  workflowId: string
+  payload: Record<string, unknown>
+  state: 'accepted' | 'duplicate' | 'rejected'
+  workflowRunId?: string
+  createdAt: string
+}
+
+export type ObservationMetricKind = 'provider_health' | 'usage' | 'queue'
+
+export interface ObservationMetric {
+  id: string
+  scope: ScopeRef
+  kind: ObservationMetricKind
+  name: string
+  value: number
+  unit: string
+  labels: Record<string, string>
+  recordedAt: string
+}
+
+export type WorkflowScheduleState = 'enabled' | 'disabled'
+
+export interface WorkflowSchedule {
+  id: string
+  scope: ScopeRef
+  workflowId: string
+  intervalMs: number
+  state: WorkflowScheduleState
+  nextRunAt: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}

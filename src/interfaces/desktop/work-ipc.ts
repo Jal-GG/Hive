@@ -7,7 +7,7 @@ import {
   ScopeRef,
   WorkItemStatus,
 } from '../../contracts.js'
-import { asResult, HiveError } from '../../errors.js'
+import { asResult } from '../../errors.js'
 import { createId } from '../../shared.js'
 import { Ledger } from '../../ledger.js'
 import { HandoffService } from '../../work/handoffs.js'
@@ -15,6 +15,7 @@ import { MailService } from '../../work/mail.js'
 import { PacketCompiler } from '../../work/packet.js'
 import { WorkBoard } from '../../work/board.js'
 import { RuntimeIpcHandler, RuntimeIpcRegistrar, workBrowseOperationNames, workControlOperationNames, workIpcPrefix } from './runtime-channels.js'
+import { optional, payloadOf, required, strings, whole } from './ipc-payload.js'
 
 /**
  * The work plane on the desktop: the same task-board, mail, handoff, and packet
@@ -102,37 +103,4 @@ export function registerWorkIpc(registrar: RuntimeIpcRegistrar, surfaces: WorkIp
     channels.push(channel)
   }
   return channels
-}
-
-function payloadOf(payload: unknown): Record<string, unknown> {
-  return typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : {}
-}
-
-function required(payload: Record<string, unknown>, field: string): string {
-  const value = payload[field]
-  if (typeof value !== 'string' || value === '') throw new HiveError('MISSING_ARGUMENT', `${field} is required`)
-  return value
-}
-
-function optional(payload: Record<string, unknown>, field: string): string | undefined {
-  const value = payload[field]
-  return typeof value === 'string' && value !== '' ? value : undefined
-}
-
-function whole(payload: Record<string, unknown>, field: string): number | undefined {
-  const value = payload[field]
-  if (value === undefined) return undefined
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new HiveError('INVALID_ARGUMENT', `${field} must be a non-negative integer`)
-  }
-  return value
-}
-
-function strings(payload: Record<string, unknown>, field: string): string[] | undefined {
-  const value = payload[field]
-  if (value === undefined) return undefined
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
-    throw new HiveError('INVALID_ARGUMENT', `${field} must be a list of strings`)
-  }
-  return value as string[]
 }

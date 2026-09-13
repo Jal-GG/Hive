@@ -8,9 +8,15 @@
     "test": "node scripts/native-abi.mjs node && vitest run",
     "check": "npm run build && npm test",
     "build:desktop": "node scripts/build-desktop.mjs && vite build",
-    "desktop": "npm run build:desktop && node scripts/native-abi.mjs electron && electron ."
+    "desktop": "npm run build:desktop && node scripts/native-abi.mjs electron && electron .",
+    "build:cli": "node scripts/build-cli.mjs",
+    "cli": "npm run build:cli && node dist/cli.cjs",
+    "release:manifest": "node scripts/release-manifest.mjs"
   },
   "main": "dist/desktop/main.cjs",
+  "bin": {
+    "hive": "dist/cli.cjs"
+  },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
     "framer-motion": "^13.2.0",

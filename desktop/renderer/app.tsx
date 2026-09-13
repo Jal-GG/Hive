@@ -37,7 +37,38 @@ interface PlanView {
   updatedByActorId: string
 }
 
-type Tab = 'runs' | 'tasks' | 'fleet'
+/** The Phase 8 control-plane views (§7 Phase 8). Shapes match the control IPC envelope. */
+interface WorkflowView {
+  id: string
+  version: string
+  enabled: boolean
+}
+interface WorkflowRunView {
+  id: string
+  workflowId: string
+  state: string
+}
+interface TriggerView {
+  id: string
+  kind: string
+  workflowId: string
+  state: 'accepted' | 'duplicate' | 'rejected'
+  payload: Record<string, unknown>
+  createdAt: string
+}
+interface ScheduleView {
+  id: string
+  workflowId: string
+  intervalMs: number
+  state: 'enabled' | 'disabled'
+  nextRunAt: string
+}
+interface AdmissionView {
+  policy: { paused?: boolean; allowedKinds?: string[]; spendCapUsd?: number }
+  breaker: { failures: number; openUntil?: string }
+}
+
+type Tab = 'runs' | 'tasks' | 'fleet' | 'ingress'
 
 const liveRunStates: readonly RunState[] = ['spawning', 'running', 'idle', 'completing']
 const liveWorkStates: readonly WorkItemStatus[] = ['assigned', 'in_progress', 'review']
@@ -59,6 +90,11 @@ function App({ model }: { model: RuntimeViewModel }) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined)
   const [plan, setPlan] = useState<PlanView | null>(null)
   const [workError, setWorkError] = useState<string | undefined>(undefined)
+  const [workflows, setWorkflows] = useState<WorkflowView[]>([])
+  const [workflowRuns, setWorkflowRuns] = useState<WorkflowRunView[]>([])
+  const [triggers, setTriggers] = useState<TriggerView[]>([])
+  const [schedules, setSchedules] = useState<ScheduleView[]>([])
+  const [admission, setAdmission] = useState<AdmissionView | undefined>(undefined)
   const terminalElement = useRef<HTMLDivElement>(null)
   const terminal = useRef<Terminal | undefined>(undefined)
 
@@ -137,13 +173,52 @@ function App({ model }: { model: RuntimeViewModel }) {
     setPlan(result.ok ? ((result.data as PlanView | null) ?? null) : null)
   }, [])
 
+  /**
+   * The Phase 8 control plane, read through the same channels the CLI's services
+   * back — one truth, not a desktop copy of it. A refusal is surfaced rather than
+   * swallowed: an operator who paused ingress needs to see that it held.
+   */
+  const refreshControl = useCallback(async () => {
+    const [workflowsResult, runsResult, triggersResult, schedulesResult, admissionResult] = await Promise.all([
+      window.hive.control.invoke('workflows'),
+      window.hive.control.invoke('runs'),
+      window.hive.control.invoke('triggers'),
+      window.hive.control.invoke('schedules'),
+      window.hive.control.invoke('admission'),
+    ])
+    if (workflowsResult.ok) setWorkflows(workflowsResult.data as WorkflowView[])
+    if (runsResult.ok) setWorkflowRuns(runsResult.data as WorkflowRunView[])
+    if (triggersResult.ok) setTriggers(triggersResult.data as TriggerView[])
+    else setWorkError(triggersResult.error.message)
+    if (schedulesResult.ok) setSchedules(schedulesResult.data as ScheduleView[])
+    if (admissionResult.ok) setAdmission(admissionResult.data as AdmissionView)
+  }, [])
+
+  const controlAction = useCallback(
+    async (operation: string, payload?: Record<string, unknown>) => {
+      const result = await window.hive.control.invoke(operation, payload)
+      if (!result.ok) {
+        setWorkError(result.error.message)
+        return
+      }
+      setWorkError(undefined)
+      await refreshControl()
+    },
+    [refreshControl],
+  )
+
   // The board and fleet poll while their tab is in front: no push streams yet.
   useEffect(() => {
     if (tab === 'runs') return
+    if (tab === 'ingress') {
+      void refreshControl()
+      const timer = setInterval(() => void refreshControl(), 2500)
+      return () => clearInterval(timer)
+    }
     void refreshWork()
     const timer = setInterval(() => void refreshWork(), 2500)
     return () => clearInterval(timer)
-  }, [tab, refreshWork])
+  }, [tab, refreshWork, refreshControl])
 
   const runWork = useCallback(async (operation: string, payload: Record<string, unknown>) => {
     const result = await window.hive.work.invoke(operation, payload)
@@ -186,6 +261,7 @@ function App({ model }: { model: RuntimeViewModel }) {
                 { id: 'runs', label: 'Runs', icon: <Activity className="h-3.5 w-3.5" /> },
                 { id: 'tasks', label: 'Tasks', icon: <ListChecks className="h-3.5 w-3.5" /> },
                 { id: 'fleet', label: 'Fleet', icon: <Bot className="h-3.5 w-3.5" /> },
+                { id: 'ingress', label: 'Ingress', icon: <Zap className="h-3.5 w-3.5" /> },
               ] as const
             ).map((entry) => (
               <button
@@ -329,6 +405,77 @@ function App({ model }: { model: RuntimeViewModel }) {
                     </motion.div>
                   ))}
                   {agents.length === 0 && <EmptyHint text="no agents registered — the hive sleeps" />}
+                </motion.div>
+              )}
+
+              {tab === 'ingress' && (
+                <motion.div
+                  key="ingress"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 8 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex flex-col gap-2"
+                >
+                  <div className="glass-soft rounded-xl p-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] uppercase tracking-widest text-hive-500">trigger ingress</span>
+                      <span className={`ml-auto font-mono text-[10px] ${admission?.policy.paused ? 'text-ember-400' : 'text-phosphor-400'}`}>
+                        {admission?.policy.paused ? 'paused' : 'live'}
+                      </span>
+                    </div>
+                    {admission?.breaker.failures ? (
+                      <p className="mt-1 font-mono text-[10px] text-ember-400">
+                        breaker {admission.breaker.failures}
+                        {admission.breaker.openUntil ? ` · open until ${admission.breaker.openUntil}` : ''}
+                      </p>
+                    ) : null}
+                    {admission?.policy.allowedKinds?.length ? (
+                      <p className="mt-1 font-mono text-[10px] text-hive-500">kinds {admission.policy.allowedKinds.join(', ')}</p>
+                    ) : null}
+                    <div className="mt-2 flex gap-2">
+                      <button className="btn btn-ghost" disabled={admission?.policy.paused === true} onClick={() => void controlAction('pause')}>
+                        Pause
+                      </button>
+                      <button className="btn btn-ghost" disabled={admission?.policy.paused !== true} onClick={() => void controlAction('resume')}>
+                        Resume
+                      </button>
+                    </div>
+                  </div>
+
+                  <p className="px-1 font-mono text-[10px] uppercase tracking-widest text-hive-500">
+                    {workflows.length} workflows · {workflowRuns.length} runs · {schedules.length} schedules
+                  </p>
+
+                  {triggers
+                    .slice()
+                    .reverse()
+                    .slice(0, 12)
+                    .map((trigger, index) => (
+                      <motion.div
+                        key={`${trigger.id}:${trigger.createdAt}`}
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: Math.min(index * 0.02, 0.2) }}
+                        className="glass-soft rounded-xl px-3 py-2"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`font-mono text-[10px] ${
+                              trigger.state === 'accepted' ? 'text-phosphor-400' : trigger.state === 'rejected' ? 'text-ember-400' : 'text-hive-500'
+                            }`}
+                          >
+                            {trigger.state}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-hive-100">{trigger.workflowId}</span>
+                          <span className="font-mono text-[10px] text-hive-500">{trigger.kind}</span>
+                        </div>
+                        {trigger.state === 'rejected' && typeof trigger.payload.reason === 'string' ? (
+                          <p className="mt-1 truncate text-[11px] text-ember-400">{String(trigger.payload.reason)}</p>
+                        ) : null}
+                      </motion.div>
+                    ))}
+                  {triggers.length === 0 && <EmptyHint text="no triggers yet — ingress is quiet" />}
                 </motion.div>
               )}
             </AnimatePresence>

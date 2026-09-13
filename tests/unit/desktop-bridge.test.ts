@@ -336,6 +336,29 @@ describe('Phase 8 control plane over the desktop', () => {
     cliLedger.close()
     desktop.close()
   })
+
+  it('serves watches, queues, voice, and version over the control channels', async () => {
+    const repoRoot = gitRepository('desktop-control-extended')
+    const desktop = startDesktopHost({ repoRoot, hostEnv: {} })
+    const main = new IpcMainRecorder()
+    desktop.registerIpc(main)
+
+    expect(ok(await main.invoke('hive:control:register', { definition }))).toMatchObject({ id: 'pr-review' })
+    expect(ok(await main.invoke('hive:control:watch', { id: 'context-watch', workflowId: 'pr-review', uriPrefix: 'viking://workspace/main/project/hive/memory/' }))).toMatchObject({ id: 'context-watch' })
+    expect(ok(await main.invoke('hive:control:watches')) as unknown[]).toHaveLength(1)
+    expect(ok(await main.invoke('hive:control:queues')) as unknown[]).toContainEqual(expect.objectContaining({ queue: 'supervisor' }))
+    expect((ok(await main.invoke('hive:control:version')) as { version: string }).version).toMatch(/^\d+\.\d+\.\d+$/)
+
+    // The voice operator is assembled by the host itself, and answers through the
+    // same capability checks every other channel applies.
+    const vocabulary = ok(await main.invoke('hive:control:voice', {})) as { vocabulary: unknown[] }
+    expect(vocabulary.vocabulary.length).toBeGreaterThan(0)
+    const turn = ok(await main.invoke('hive:control:voice', { utterance: 'status' })) as { outcome: { kind: string } }
+    expect(turn.outcome.kind).toBe('answered')
+    const refused = ok(await main.invoke('hive:control:voice', { utterance: 'make me a sandwich' })) as { outcome: { kind: string; reason?: string } }
+    expect(refused.outcome).toMatchObject({ kind: 'refused', reason: 'unrecognized' })
+    desktop.close()
+  })
 })
 
 describe('channel-name drift guard', () => {

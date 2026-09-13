@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { ActorContext, ObservationMetric, ObservationMetricKind, ScopeRef } from './contracts.js'
+import { ActorContext, ObservationMetric, ObservationMetricKind, QueueDiagnostic, ScopeRef } from './contracts.js'
 import { assertCapability } from './capabilities.js'
 import { HiveError } from './errors.js'
 import { Ledger } from './ledger.js'
@@ -57,6 +57,26 @@ export class ObservabilityService {
     return this.record(actor, scope, { kind: 'queue', name: 'depth', value: depth, unit: 'items', labels: { queue } })
   }
 
+  /** §7 Phase 8 "retrieval trajectory" as a metric kind, alongside the durable trajectory rows. */
+  retrievalTrajectory(actor: ActorContext, scope: ScopeRef, query: string, hitCount: number, durationMs: number): ObservationMetric | undefined {
+    const label = query.slice(0, 64).toLowerCase().replace(/[^a-z0-9_.-]/g, '_')
+    return this.record(actor, scope, { kind: 'retrieval', name: 'hits', value: hitCount, unit: 'documents', labels: { query: label.length > 0 ? label : 'blank' } })
+  }
+
+  /**
+   * Queue diagnostics (§7 Phase 8): the durable queue state read out of the
+   * ledger, with the depth mirrored into metrics when telemetry is on so a
+   * spend-capped or opt-in operator sees the same numbers a dashboard does.
+   */
+  queueDiagnostics(actor: ActorContext, scope: ScopeRef): QueueDiagnostic[] {
+    assertCapability(actor.capabilities, 'workspace:read')
+    const queues = this.ledger.queueDiagnostics(scope)
+    for (const queue of queues) {
+      this.queueDepth(actor, scope, queue.queue, queue.depth)
+    }
+    return queues
+  }
+
   /**
    * Cost incurred in a scope, summed from recorded usage. This is the spend source
    * a trigger policy caps against (§5.7). With telemetry disabled nothing is
@@ -69,6 +89,31 @@ export class ObservabilityService {
     return this.ledger.listObservationMetrics(scope, 'usage')
       .filter((metric) => metric.name === 'cost')
       .reduce((total, metric) => total + metric.value, 0)
+  }
+
+  /**
+   * An OTLP-shaped metrics snapshot (§7 Phase 8 "OTel/metrics"). It is a
+   * deterministic local projection rather than a live exporter: the caller —
+   * a periodic task, a CLI command, an SDK client — owns when and where it
+   * goes, including nowhere. Fingerprinted and bounded so an export can never
+   * become an unbounded dump: one gauge per (kind, name, label-set).
+   */
+  otlpSnapshot(actor: ActorContext, scope: ScopeRef): { resourceMetrics: { scope: { name: string; version: string }; metrics: Array<{ name: string; unit: string; gauge: { value: number; labels: Record<string, string>; recordedAt: string } }> } } {
+    assertCapability(actor.capabilities, 'workspace:read')
+    const gauges = new Map<string, { name: string; unit: string; gauge: { value: number; labels: Record<string, string>; recordedAt: string } }>()
+    for (const metric of this.ledger.listObservationMetrics(scope)) {
+      const labelsKey = Object.entries(metric.labels).sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, value]) => `${key}=${value}`).join(',')
+      const name = `hive_${metric.kind}_${metric.name}`
+      const key = `${name}|${labelsKey}`
+      // Last write wins: the snapshot reflects the most recent value of each series.
+      gauges.set(key, { name, unit: metric.unit, gauge: { value: metric.value, labels: metric.labels, recordedAt: metric.recordedAt } })
+    }
+    return {
+      resourceMetrics: {
+        scope: { name: 'hive', version: '1' },
+        metrics: [...gauges.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+      },
+    }
   }
 }
 

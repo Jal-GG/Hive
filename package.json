@@ -11,7 +11,8 @@
     "desktop": "npm run build:desktop && node scripts/native-abi.mjs electron && electron .",
     "build:cli": "node scripts/build-cli.mjs",
     "cli": "npm run build:cli && node dist/cli.cjs",
-    "release:manifest": "node scripts/release-manifest.mjs"
+    "release:manifest": "node scripts/release-manifest.mjs",
+    "release:package": "node scripts/package-release.mjs"
   },
   "main": "dist/desktop/main.cjs",
   "bin": {

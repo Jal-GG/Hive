@@ -11,6 +11,20 @@ export interface SearchOptions {
   limit?: number
 }
 
+export interface SearcherOptions {
+  ledger: Ledger
+  /**
+   * §7 Phase 8 "retrieval trajectory": when supplied, every search is recorded
+   * — query, tiers, hit count, top hit, duration — so retrieval is observable
+   * without a provider. Absent means searches are unrecorded, exactly like
+   * telemetry-off everywhere else.
+   */
+  trajectory?: {
+    record(scope: ScopeRef, query: string, tiers: string[], hitCount: number, topHitUri: string | undefined, durationMs: number): void
+    metric?(actor: ActorContext, scope: ScopeRef, query: string, hitCount: number, durationMs: number): void
+  }
+}
+
 /**
  * Reciprocal rank fusion: each list votes 1/(k + rank) for what it ranked, and
  * the votes add. Rank order is the only thing a list contributes — scores from
@@ -36,10 +50,26 @@ export function reciprocalRankFusion<T>(lists: readonly (readonly T[])[], keyOf:
  * query, same index, same answer — every time, on every machine.
  */
 export class Searcher {
-  constructor(private readonly ledger: Ledger) {}
+  private readonly ledger: Ledger
+  private readonly trajectory?: SearcherOptions['trajectory']
+
+  constructor(ledger: Ledger | SearcherOptions) {
+    this.ledger = 'ledger' in ledger ? ledger.ledger : ledger
+    this.trajectory = 'ledger' in ledger ? ledger.trajectory : undefined
+  }
 
   search(actor: ActorContext, scope: ScopeRef, query: string, options: SearchOptions = {}): SearchHit[] {
     assertCapability(actor.capabilities, 'context:read')
+    const startedAt = performance.now()
+    const hits = this.run(scope, query, options)
+    // The trajectory is recorded even for the empty-query early return: a query
+    // that matched nothing is a retrieval decision worth seeing, not a gap.
+    this.trajectory?.record(scope, query, [...(options.tiers ?? [])], hits.length, hits[0]?.uri, Math.round(performance.now() - startedAt))
+    this.trajectory?.metric?.(actor, scope, query, hits.length, Math.round(performance.now() - startedAt))
+    return hits
+  }
+
+  private run(scope: ScopeRef, query: string, options: SearchOptions): SearchHit[] {
     const terms = query.trim().split(/\s+/).filter((term) => term.length > 0)
     if (terms.length === 0) return []
     const limit = options.limit ?? 20

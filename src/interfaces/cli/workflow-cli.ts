@@ -1,14 +1,20 @@
-import { ActorContext, ScopeRef, WorkflowDefinition, WorkflowRun } from '../../contracts.js'
+import { ActorContext, ScopeRef, WorkflowDefinition, WorkflowRun, WorkflowWatch } from '../../contracts.js'
 import { HiveError } from '../../errors.js'
 import { Ledger } from '../../ledger.js'
+import { ObservabilityService } from '../../observability.js'
+import { currentVersion } from '../../release.js'
 import { WorkflowService, TriggerInput } from '../../workflow.js'
+import { VoiceOperator } from '../../voice.js'
 
 export interface WorkflowCliSurfaces {
   ledger: Ledger
   workflows: WorkflowService
+  observability?: ObservabilityService
+  voice?: VoiceOperator
+  packageRoot?: string
 }
 
-const operations = ['list', 'register', 'trigger', 'runs', 'cancel', 'triggers', 'schedules', 'schedule', 'schedule-state', 'tick', 'pause', 'resume', 'admission'] as const
+const operations = ['list', 'register', 'trigger', 'runs', 'cancel', 'triggers', 'schedules', 'schedule', 'schedule-state', 'watches', 'watch', 'watch-state', 'watch-remove', 'queues', 'admission', 'tick', 'pause', 'resume', 'voice', 'version', 'otel'] as const
 type WorkflowOperation = (typeof operations)[number]
 
 export async function runWorkflowCli(surfaces: WorkflowCliSurfaces, actor: ActorContext, argv: readonly string[]): Promise<string> {
@@ -38,10 +44,29 @@ export async function runWorkflowCli(surfaces: WorkflowCliSurfaces, actor: Actor
     case 'schedules': return render(surfaces.workflows.schedules(scope))
     case 'schedule': return render(surfaces.workflows.schedule(actor, { id: requireValue('--id', flagValue(rest, '--id')), workflowId: requireValue('--workflow', flagValue(rest, '--workflow')), intervalMs: Number(requireValue('--interval-ms', flagValue(rest, '--interval-ms'))), state: 'enabled', nextRunAt: requireValue('--next-run-at', flagValue(rest, '--next-run-at')), scope }))
     case 'schedule-state': return render(surfaces.workflows.setScheduleState(actor, requireValue('--id', flagValue(rest, '--id')), (flagValue(rest, '--state') ?? 'enabled') as 'enabled' | 'disabled'))
+    case 'watches': return render(surfaces.workflows.watches(scope))
+    case 'watch': return render(surfaces.workflows.watch(actor, { id: requireValue('--id', flagValue(rest, '--id')), workflowId: requireValue('--workflow', flagValue(rest, '--workflow')), uriPrefix: requireValue('--uri-prefix', flagValue(rest, '--uri-prefix')), state: 'enabled', nextRunAt: flagValue(rest, '--next-run-at') ?? new Date().toISOString(), scope }))
+    case 'watch-state': return render(surfaces.workflows.setWatchState(actor, requireValue('--id', flagValue(rest, '--id')), (flagValue(rest, '--state') ?? 'enabled') as WorkflowWatch['state']))
+    case 'watch-remove': return render({ removed: surfaces.workflows.removeWatch(actor, requireValue('--id', flagValue(rest, '--id'))) })
+    case 'queues': {
+      if (!surfaces.observability) throw new HiveError('MISSING_ARGUMENT', 'Queue diagnostics need an observability service')
+      return render(surfaces.observability.queueDiagnostics(actor, scope))
+    }
+    case 'admission': return render(surfaces.workflows.admissionState())
     case 'tick': return render({ triggered: surfaces.workflows.tick(actor, new Date(flagValue(rest, '--at') ?? new Date().toISOString())) })
     case 'pause': return render({ policy: surfaces.workflows.setPaused(actor, scope, true) })
     case 'resume': return render({ policy: surfaces.workflows.setPaused(actor, scope, false) })
-    case 'admission': return render(surfaces.workflows.admissionState())
+    case 'voice': {
+      if (!surfaces.voice) throw new HiveError('VOICE_UNAVAILABLE', 'The voice operator is not configured')
+      const utterance = flagValue(rest, '--utterance')
+      if (!utterance) return render({ vocabulary: surfaces.voice.vocabulary() })
+      return render(surfaces.voice.turn(actor, utterance))
+    }
+    case 'version': return render({ version: currentVersion(surfaces.packageRoot ?? process.cwd()) })
+    case 'otel': {
+      if (!surfaces.observability) throw new HiveError('MISSING_ARGUMENT', 'OTel snapshot needs an observability service')
+      return render(surfaces.observability.otlpSnapshot(actor, scope))
+    }
   }
 }
 
@@ -58,10 +83,18 @@ export function workflowUsage(): string {
     '  schedules             List schedule state and next run',
     '  schedule              Add or replace a schedule (--id, --workflow, --interval-ms, --next-run-at)',
     '  schedule-state        Enable or disable a schedule (--id, --state enabled|disabled)',
-    '  tick                  Run due schedules once (--at)',
+    '  watches               List context watches and their next observation',
+    '  watch                 Watch a context URI prefix for change (--id, --workflow, --uri-prefix, --next-run-at)',
+    '  watch-state           Enable or disable a watch (--id, --state enabled|disabled)',
+    '  watch-remove          Remove a watch (--id)',
+    '  queues                Queue diagnostics: depth, states, oldest item',
+    '  admission             Show the ingress policy and circuit-breaker state',
+    '  tick                  Run due schedules and watches once (--at)',
     '  pause                 Refuse all trigger ingress (§5.7)',
     '  resume                Resume trigger ingress',
-    '  admission             Show the ingress policy and circuit-breaker state',
+    '  voice                 Resolve a voice turn (--utterance), or list the vocabulary',
+    '  version               The running Hive version',
+    '  otel                  OTLP-shaped metrics snapshot (opt-in telemetry)',
     '',
     'Options:',
     '  --workspace <name>    Workspace name (default main)',

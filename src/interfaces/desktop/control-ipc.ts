@@ -1,8 +1,10 @@
-import { ActorContext, ResultEnvelope, ScopeRef, TriggerRecord, WorkflowDefinition, WorkflowSchedule } from '../../contracts.js'
+import { ActorContext, ResultEnvelope, ScopeRef, TriggerRecord, WorkflowDefinition, WorkflowSchedule, WorkflowWatch } from '../../contracts.js'
 import { asResult, HiveError } from '../../errors.js'
 import { Ledger } from '../../ledger.js'
 import { ObservabilityService } from '../../observability.js'
 import { WorkflowService, TriggerInput } from '../../workflow.js'
+import { VoiceOperator } from '../../voice.js'
+import { currentVersion } from '../../release.js'
 import { createId } from '../../shared.js'
 import { RuntimeIpcHandler, RuntimeIpcRegistrar, controlBrowseOperationNames, controlControlOperationNames, controlIpcPrefix } from './runtime-channels.js'
 import { optional, payloadOf, required, whole } from './ipc-payload.js'
@@ -18,10 +20,14 @@ export interface ControlIpcSurfaces {
   ledger: Ledger
   workflows: WorkflowService
   observability: ObservabilityService
+  /** §7 Phase 8 voice: absent means the `voice` channel answers unavailable. */
+  voice?: VoiceOperator
+  /** Package root for `version`; defaults to the process working directory. */
+  packageRoot?: string
 }
 
 export function controlIpcHandlers(surfaces: ControlIpcSurfaces, actor: ActorContext): Map<string, RuntimeIpcHandler> {
-  const { scope, ledger, workflows, observability } = surfaces
+  const { scope, ledger, workflows, observability, voice } = surfaces
   const handlers = new Map<string, RuntimeIpcHandler>()
   const envelope = <T>(operation: () => T): ResultEnvelope<T> => asResult(createId(), operation)
 
@@ -33,9 +39,11 @@ export function controlIpcHandlers(surfaces: ControlIpcSurfaces, actor: ActorCon
           case 'runs': return ledger.listWorkflowRuns(scope)
           case 'triggers': return ledger.listTriggers(scope)
           case 'schedules': return workflows.schedules(scope)
+          case 'watches': return workflows.watches(scope)
           case 'skills': return ledger.listSkills(scope)
           case 'metrics': return observability.metrics(actor, scope)
           case 'admission': return workflows.admissionState()
+          case 'queues': return observability.queueDiagnostics(actor, scope)
         }
       }),
     )
@@ -79,6 +87,26 @@ export function controlIpcHandlers(surfaces: ControlIpcSurfaces, actor: ActorCon
           }
           case 'schedule-state':
             return workflows.setScheduleState(actor, required(body, 'id'), (optional(body, 'state') as WorkflowSchedule['state'] | undefined) ?? 'enabled')
+          case 'watch': {
+            const watch: Omit<WorkflowWatch, 'scope' | 'createdBy' | 'createdAt' | 'updatedAt'> & { scope: ScopeRef } = {
+              id: required(body, 'id'),
+              workflowId: required(body, 'workflowId'),
+              uriPrefix: required(body, 'uriPrefix'),
+              state: 'enabled',
+              nextRunAt: (optional(body, 'nextRunAt') as string | undefined) ?? new Date().toISOString(),
+              scope,
+            }
+            return workflows.watch(actor, watch)
+          }
+          case 'watch-state':
+            return workflows.setWatchState(actor, required(body, 'id'), (optional(body, 'state') as WorkflowWatch['state'] | undefined) ?? 'enabled')
+          case 'watch-remove': return { removed: workflows.removeWatch(actor, required(body, 'id')) }
+          case 'voice': {
+            if (!voice) throw new HiveError('VOICE_UNAVAILABLE', 'The voice operator is not configured on this host')
+            if (optional(body, 'utterance') === undefined) return { vocabulary: voice.vocabulary() }
+            return voice.turn(actor, required(body, 'utterance'))
+          }
+          case 'version': return { version: currentVersion(surfaces.packageRoot ?? process.cwd()) }
         }
       }),
     )

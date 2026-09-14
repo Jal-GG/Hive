@@ -23,6 +23,8 @@ import { ConvoyService } from '../../merge/convoy.js'
 import { commandGateRunner, GateDefinition } from '../../merge/gates.js'
 import { ObservabilityService } from '../../observability.js'
 import { WorkflowService } from '../../workflow.js'
+import { LedgerWatchSource } from '../../watch-source.js'
+import { VoiceOperator } from '../../voice.js'
 import type { TriggerAdmissionPolicy } from '../../admission.js'
 
 /**
@@ -48,6 +50,12 @@ export interface DesktopHostOptions {
   merge?: { remote: string; gates: readonly GateDefinition[]; protectedBranches?: readonly string[] }
   /** §5.7 ingress policy. Absent admits everything; telemetry stays opt-in (§7.0). */
   triggers?: { admission?: TriggerAdmissionPolicy; telemetry?: boolean }
+  /**
+   * §7 Phase 8 voice: absent means the voice channel answers unavailable. The
+   * operator is assembled here so it can never be reached except through the
+   * same capability checks every other surface enforces.
+   */
+  voice?: { spendCapUsd?: number }
 }
 
 /**
@@ -148,6 +156,15 @@ export function startDesktopHost(options: DesktopHostOptions, actor: ActorContex
     board,
     admission: options.triggers?.admission,
     spend: (scope) => observability.costUsd(actor, scope),
+    watchSource: new LedgerWatchSource(ledger),
+  })
+  const voice = new VoiceOperator({
+    ledger,
+    workflows,
+    observability,
+    scope: workScope,
+    spend: (scope) => observability.costUsd(actor, scope),
+    spendCapUsd: options.voice?.spendCapUsd,
   })
 
   return {
@@ -161,7 +178,7 @@ export function startDesktopHost(options: DesktopHostOptions, actor: ActorContex
       ...registerContextIpc(registrar, context, actor),
       ...registerWorkIpc(registrar, { scope: workScope, board, mail, handoffs, packets, ledger }, actor),
       ...registerMergeIpc(registrar, { scope: workScope, ledger, queue, convoys, configured: options.merge !== undefined }, actor),
-      ...registerControlIpc(registrar, { scope: workScope, ledger, workflows, observability }, actor),
+      ...registerControlIpc(registrar, { scope: workScope, ledger, workflows, observability, voice }, actor),
       ...stream.registerControl(registrar),
     ],
     recover: () => host.recover(actor),

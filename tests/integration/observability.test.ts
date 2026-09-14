@@ -62,4 +62,43 @@ describe('Phase 8 integrations and observability', () => {
     expect(() => enabled.record(operator, harness.scope, { kind: 'queue', name: 'depth', value: 1, unit: 'items', labels: { request_id: 'unbounded value!' } })).toThrowError(/bounded lowercase strings/)
     harness.close()
   })
+
+  it('reports queue diagnostics from ledger state and mirrors depth into opt-in metrics', () => {
+    const operator = actor()
+    const harness = workHarness([operator])
+    const observability = new ObservabilityService({ ledger: harness.ledger, enabled: true, now: harness.clock.now })
+    const queues = observability.queueDiagnostics(operator, harness.scope)
+    expect(queues.map((queue) => queue.queue)).toContain('supervisor')
+    expect(queues.find((queue) => queue.queue === 'supervisor')?.depth).toBe(0)
+
+    // A pending mail message lands in its queue and the next read sees it.
+    harness.mail.send(operator, harness.scope, { queue: 'supervisor', subject: 'POLECAT_DONE', body: 'run finished', type: 'protocol', priority: 'normal', delivery: 'queue' })
+    const after = observability.queueDiagnostics(operator, harness.scope)
+    expect(after.find((queue) => queue.queue === 'supervisor')?.depth).toBe(1)
+    const metrics = observability.metrics(operator, harness.scope, 'queue')
+    expect(metrics.some((metric) => metric.labels.queue === 'supervisor' && metric.value === 1)).toBe(true)
+    harness.close()
+  })
+
+  it('exports an OTLP-shaped snapshot with one gauge per series', () => {
+    const operator = actor()
+    const harness = workHarness([operator])
+    const observability = new ObservabilityService({ ledger: harness.ledger, enabled: true, now: harness.clock.now })
+    observability.providerHealth(operator, harness.scope, 'fake', true)
+    observability.usage(operator, harness.scope, 'fake', 10, 5, 0.02)
+    const snapshot = observability.otlpSnapshot(operator, harness.scope)
+    expect(snapshot.resourceMetrics.scope.name).toBe('hive')
+    const names = snapshot.resourceMetrics.metrics.map((metric) => metric.name)
+    expect(names).toContain('hive_provider_health_available')
+    expect(names).toContain('hive_usage_cost')
+    // Two writes to the same series collapse to the last value, not two gauges.
+    // The clock advances first so "last" is a property of the data, not of id ties.
+    harness.clock.advance(1000)
+    observability.usage(operator, harness.scope, 'fake', 10, 5, 0.05)
+    const second = observability.otlpSnapshot(operator, harness.scope)
+    const costGauges = second.resourceMetrics.metrics.filter((metric) => metric.name === 'hive_usage_cost')
+    expect(costGauges).toHaveLength(1)
+    expect(costGauges[0].gauge.value).toBe(0.05)
+    harness.close()
+  })
 })

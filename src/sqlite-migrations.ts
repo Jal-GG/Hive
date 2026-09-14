@@ -1,4 +1,4 @@
-export const schemaVersion = 17
+export const schemaVersion = 20
 
 export const migrations: Record<number, string> = {
   1: `
@@ -400,6 +400,69 @@ export const migrations: Record<number, string> = {
     CREATE TABLE IF NOT EXISTS control_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `,
+  18: `
+    -- Phase 8: context watches. A watch observes a canonical URI prefix and
+    -- enqueues its workflow when the content fingerprint moves. The fingerprint
+    -- is stored, not the content: a watch row is an observation trigger, not a
+    -- copy of what it watched.
+    CREATE TABLE IF NOT EXISTS workflow_watches (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      workflow_id TEXT NOT NULL,
+      uri_prefix TEXT NOT NULL,
+      state TEXT NOT NULL,
+      last_observed TEXT,
+      next_run_at TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS workflow_watches_due_idx ON workflow_watches(state, next_run_at);
+    CREATE INDEX IF NOT EXISTS workflow_watches_scope_idx ON workflow_watches(workspace_id, project_id, state);
+    -- Phase 8: retrieval trajectories, the observability record of what
+    -- retrieval was asked and what it returned. Opt-in with telemetry: the
+    -- trajectory is a metric, and recording it is a telemetry decision.
+    CREATE TABLE IF NOT EXISTS retrieval_trajectories (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      query TEXT NOT NULL,
+      tiers TEXT NOT NULL,
+      hit_count INTEGER NOT NULL,
+      top_hit_uri TEXT,
+      duration_ms INTEGER NOT NULL,
+      occurred_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS retrieval_trajectories_scope_idx ON retrieval_trajectories(workspace_id, project_id, occurred_at);
+  `,
+  19: `
+    -- Phase 9: federation quarantine. Imported peer events land here first,
+    -- reviewed evidence rather than adopted state (§7 Phase 9). Promotion out
+    -- of quarantine is an explicit operator decision, never automatic.
+    CREATE TABLE IF NOT EXISTS federation_quarantine (
+      id TEXT PRIMARY KEY,
+      peer_id TEXT NOT NULL,
+      event_json TEXT NOT NULL,
+      received_at TEXT NOT NULL,
+      state TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS federation_quarantine_peer_idx ON federation_quarantine(peer_id, state, received_at);
+  `,
+  20: `
+    -- Phase 9: federation replay state. One row per peer: the last page
+    -- sequence imported (the replay cursor), the page checksum (idempotent
+    -- re-import of the same page is a no-op, not a duplicate quarantine), and
+    -- the peer manifest checksum (a peer whose manifest changes mid-stream is
+    -- a different contract, not a continuation of the same one).
+    CREATE TABLE IF NOT EXISTS federation_replay_state (
+      peer_id TEXT PRIMARY KEY,
+      last_sequence INTEGER NOT NULL,
+      last_page_checksum TEXT NOT NULL,
+      manifest_checksum TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
   `,

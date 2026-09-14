@@ -93,6 +93,32 @@ describe('ingestion and lexical search — the Phase 6 gate', () => {
     harness.close()
   })
 
+  it('records a retrieval trajectory for every search: query, tiers, hits, top hit, duration', () => {
+    const harness = knowledgeHarness([operator])
+    harness.ingest.ingest(operator, harness.scope, sourceTree())
+    const observed = new Searcher({
+      ledger: harness.ledger,
+      trajectory: {
+        record: (scope, query, tiers, hitCount, topHitUri, durationMs) => {
+          harness.ledger.insertRetrievalTrajectory({ id: `traj:${query}:${tiers.join(',')}`, scope, query, tiers, hitCount, topHitUri, durationMs, occurredAt: new Date().toISOString() })
+        },
+      },
+    })
+
+    observed.search(operator, harness.scope, 'parser registry', { tiers: ['L0'] })
+    observed.search(operator, harness.scope, '   ')
+    const trajectories = harness.ledger.listRetrievalTrajectories(harness.scope)
+    expect(trajectories).toHaveLength(2)
+    const scored = trajectories.find((trajectory) => trajectory.query === 'parser registry')
+    expect(scored).toMatchObject({ hitCount: expect.any(Number), topHitUri: expect.any(String) })
+    expect(scored?.tiers).toEqual(['L0'])
+    expect(scored?.hitCount).toBeGreaterThan(0)
+    // The empty query is a recorded decision too: zero hits is a fact, not a gap.
+    const blank = trajectories.find((trajectory) => trajectory.query.trim() === '')
+    expect(blank?.hitCount).toBe(0)
+    harness.close()
+  })
+
   it('re-ingests incrementally: untouched files are skipped, edits reparse, deletions leave', () => {
     const harness = knowledgeHarness([operator])
     const root = sourceTree()

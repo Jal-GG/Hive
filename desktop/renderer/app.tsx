@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Activity, Bot, Hexagon, ListChecks, Plus, Send, Square, Zap } from 'lucide-react'
+import { Activity, Bot, Hexagon, ListChecks, Map, Plus, Send, Square, Zap } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
 import './app.css'
 import { RuntimeViewModel, type RuntimeViewState } from '../../src/interfaces/desktop/runtime-view-model.js'
@@ -68,7 +68,14 @@ interface AdmissionView {
   breaker: { failures: number; openUntil?: string }
 }
 
-type Tab = 'runs' | 'tasks' | 'fleet' | 'ingress'
+/** A desk in the office: one agent, its state, and the work it holds. */
+interface OfficeDeskView {
+  id: string
+  name: string
+  state: 'live' | 'idle' | 'gone'
+}
+
+type Tab = 'runs' | 'tasks' | 'fleet' | 'ingress' | 'office'
 
 const liveRunStates: readonly RunState[] = ['spawning', 'running', 'idle', 'completing']
 const liveWorkStates: readonly WorkItemStatus[] = ['assigned', 'in_progress', 'review']
@@ -210,9 +217,13 @@ function App({ model }: { model: RuntimeViewModel }) {
   // The board and fleet poll while their tab is in front: no push streams yet.
   useEffect(() => {
     if (tab === 'runs') return
-    if (tab === 'ingress') {
+    if (tab === 'ingress' || tab === 'office') {
       void refreshControl()
-      const timer = setInterval(() => void refreshControl(), 2500)
+      void refreshWork()
+      const timer = setInterval(() => {
+        void refreshControl()
+        void refreshWork()
+      }, 2500)
       return () => clearInterval(timer)
     }
     void refreshWork()
@@ -262,6 +273,7 @@ function App({ model }: { model: RuntimeViewModel }) {
                 { id: 'tasks', label: 'Tasks', icon: <ListChecks className="h-3.5 w-3.5" /> },
                 { id: 'fleet', label: 'Fleet', icon: <Bot className="h-3.5 w-3.5" /> },
                 { id: 'ingress', label: 'Ingress', icon: <Zap className="h-3.5 w-3.5" /> },
+                { id: 'office', label: 'Office', icon: <Map className="h-3.5 w-3.5" /> },
               ] as const
             ).map((entry) => (
               <button
@@ -476,6 +488,58 @@ function App({ model }: { model: RuntimeViewModel }) {
                       </motion.div>
                     ))}
                   {triggers.length === 0 && <EmptyHint text="no triggers yet — ingress is quiet" />}
+                </motion.div>
+              )}
+
+              {tab === 'office' && (
+                <motion.div
+                  key="office"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 8 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex flex-col gap-2"
+                >
+                  <div className="glass-soft rounded-xl p-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] uppercase tracking-widest text-hive-500">the office</span>
+                      <span className="ml-auto font-mono text-[10px] text-hive-500">a view, not a control</span>
+                    </div>
+                    <p className="mt-1 font-mono text-[10px] text-hive-500">
+                      {agents.length} agents · {liveRuns} at a desk · {openTasks} open tasks on the board
+                    </p>
+                  </div>
+                  <div className="office-floor grid grid-cols-2 gap-2">
+                    {agents.map((agent) => (
+                      <motion.div
+                        key={agent.id}
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="glass-soft office-desk flex items-center gap-3 rounded-xl px-3 py-3"
+                      >
+                        <span className="hex-chip flex h-8 w-8 items-center justify-center bg-gradient-to-br from-honey-400 to-honey-600">
+                          <Bot className="h-4 w-4 text-hive-950" strokeWidth={2.4} />
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate font-mono text-[12px] text-honey-300">{agent.name}</p>
+                          <p className="font-mono text-[10px] text-hive-500">
+                            {agent.energy > 0 ? `${agent.energy}/${agent.maxEnergy} energy` : 'resting'}
+                            {agent.skills.length > 0 ? ` · ${agent.skills.slice(0, 2).join(', ')}` : ''}
+                          </p>
+                        </div>
+                        <StatusDot state={agent.energy > 0 ? 'running' : 'idle'} live={agent.energy > 0} />
+                      </motion.div>
+                    ))}
+                    {Array.from({ length: Math.max(0, 4 - agents.length) }, (_, index) => (
+                      <div key={`empty-${index}`} className="glass-soft office-desk-empty flex items-center justify-center rounded-xl px-3 py-3">
+                        <span className="font-mono text-[10px] text-hive-500">empty desk</span>
+                      </div>
+                    ))}
+                  </div>
+                  {agents.length === 0 && <EmptyHint text="the office is dark — no agents registered" />}
+                  <p className="px-1 font-mono text-[10px] text-hive-500">
+                    {inFlight} tasks in flight · workflows {workflows.length} · runs {workflowRuns.length}
+                  </p>
                 </motion.div>
               )}
             </AnimatePresence>

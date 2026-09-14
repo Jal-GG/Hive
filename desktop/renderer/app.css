@@ -229,3 +229,16 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-hive-500);
 }
+
+/* The office (§7 Phase 8): a floor of desks, one per agent. A desk is a view of
+   fleet state the sidebar already shows; it holds no controls of its own. */
+.office-floor {
+  background-image:
+    radial-gradient(circle at 1px 1px, var(--color-hive-700) 1px, transparent 0);
+  background-size: 22px 22px;
+}
+
+.office-desk-empty {
+  border-style: dashed;
+  opacity: 0.55;
+}

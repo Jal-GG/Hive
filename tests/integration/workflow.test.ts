@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { runWorkflowCli } from '../../src/interfaces/cli/workflow-cli.js'
+import { LedgerWatchSource } from '../../src/watch-source.js'
 import { WorkflowService } from '../../src/workflow.js'
 import { testActor, workHarness } from '../fixtures.js'
 import type { Capability, WorkflowDefinition } from '../../src/contracts.js'
@@ -70,6 +71,48 @@ describe('declarative workflows', () => {
     expect(JSON.parse(await cli(['runs']))).toHaveLength(1)
     expect(JSON.parse(await cli(['triggers']))).toHaveLength(1)
     await expect(cli(['cancel', '--run', triggered.run.id])).rejects.toThrow(/already terminal/)
+    harness.close()
+  })
+
+  it('watches a context URI prefix: baselines first, fires only on change, and deduplicates the same content', () => {
+    const actor = testActor('operator', [...capabilities, 'context:read', 'context:write'])
+    const harness = workHarness([actor])
+    const workflows = new WorkflowService({ ledger: harness.ledger, board: harness.board, now: harness.clock.now, watchSource: new LedgerWatchSource(harness.ledger) })
+    workflows.register(actor, definition())
+    harness.fs.write(actor, harness.scope, { path: 'memory/watched.md', body: 'first body' })
+
+    workflows.watch(actor, { id: 'memory-watch', workflowId: 'review-flow', uriPrefix: `viking://workspace/main/project/hive/memory/`, state: 'enabled', nextRunAt: '2026-01-01T00:00:00.000Z', scope: harness.scope })
+
+    // First tick is the baseline: existing content is learned, not fired on.
+    expect(workflows.tick(actor, new Date('2026-01-01T00:00:01.000Z'))).toBe(0)
+    expect(harness.board.list(actor, harness.scope)).toHaveLength(0)
+
+    // A canonical rewrite moves the fingerprint (new sha and version); the next
+    // due tick fires once. Raw external edits are a reconciliation concern and
+    // reconcile into the same index before the next pass observes them.
+    harness.fs.write(actor, harness.scope, { path: 'memory/watched.md', body: 'second body' })
+    expect(workflows.tick(actor, new Date('2026-01-01T00:01:01.000Z'))).toBe(1)
+    // Same content again: no second run, the observation just advances.
+    expect(workflows.tick(actor, new Date('2026-01-01T00:02:01.000Z'))).toBe(0)
+    expect(harness.board.list(actor, harness.scope)).toHaveLength(1)
+    expect(harness.ledger.listTriggers(harness.scope).map((trigger) => trigger.kind)).toContain('watch')
+    harness.close()
+  })
+
+  it('serves watches through the CLI: register, list, disable, remove', async () => {
+    const actor = testActor('operator', capabilities)
+    const harness = workHarness([actor])
+    const workflows = new WorkflowService({ ledger: harness.ledger, board: harness.board, now: harness.clock.now })
+    workflows.register(actor, definition())
+    const cli = (argv: string[]) => runWorkflowCli({ ledger: harness.ledger, workflows }, actor, argv)
+    await cli(['watch', '--id', 'cli-watch', '--workflow', 'review-flow', '--uri-prefix', 'viking://workspace/main/project/hive/', '--next-run-at', '2026-01-01T00:00:00.000Z'])
+    const listed = JSON.parse(await cli(['watches'])) as Array<{ id: string; state: string }>
+    expect(listed).toHaveLength(1)
+    expect(listed[0].id).toBe('cli-watch')
+    await cli(['watch-state', '--id', 'cli-watch', '--state', 'disabled'])
+    expect(JSON.parse(await cli(['watches']))[0].state).toBe('disabled')
+    expect(JSON.parse(await cli(['watch-remove', '--id', 'cli-watch'])).removed).toBe(true)
+    expect(JSON.parse(await cli(['watches']))).toHaveLength(0)
     harness.close()
   })
 })

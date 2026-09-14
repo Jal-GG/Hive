@@ -14,6 +14,9 @@ export type Capability =
   | 'context:write'
   | 'event:ingest'
   | 'backup:create'
+  /** Reviewing federation imports and deciding quarantined peer records. Separate from `context:read`
+   *  so a viewer can watch federation evidence without being able to adopt or reject it. */
+  | 'federation:review'
   /** Observing the roster, run state, and transcripts. Deliberately separate from `runtime:control`
    *  so a read-only viewer can watch a fleet it cannot start, steer, or stop. */
   | 'runtime:read'
@@ -937,7 +940,7 @@ export interface WorkflowRun {
 export interface TriggerRecord {
   id: string
   scope: ScopeRef
-  kind: 'manual' | 'webhook' | 'github' | 'slack' | 'feed' | 'schedule'
+  kind: 'manual' | 'webhook' | 'github' | 'slack' | 'feed' | 'schedule' | 'watch'
   workflowId: string
   payload: Record<string, unknown>
   state: 'accepted' | 'duplicate' | 'rejected'
@@ -945,7 +948,7 @@ export interface TriggerRecord {
   createdAt: string
 }
 
-export type ObservationMetricKind = 'provider_health' | 'usage' | 'queue'
+export type ObservationMetricKind = 'provider_health' | 'usage' | 'queue' | 'retrieval'
 
 export interface ObservationMetric {
   id: string
@@ -970,4 +973,71 @@ export interface WorkflowSchedule {
   createdBy: string
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * A context watch (§7 Phase 8 "watches"): a URI prefix observed for change, so
+ * external edits to the canonical context become trigger input rather than
+ * something an operator must notice. The `uriPrefix` is canonicalized at
+ * registration; `lastObserved` is the content fingerprint at the last pass.
+ */
+export interface WorkflowWatch {
+  id: string
+  scope: ScopeRef
+  workflowId: string
+  /** Canonical `viking://` prefix watched, scope-inclusive. */
+  uriPrefix: string
+  state: WorkflowScheduleState
+  /** Content fingerprint at the last observation; change means due. */
+  lastObserved?: string
+  nextRunAt: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * Queue diagnostics (§7 Phase 8 "queue diagnostics"): one row per durable
+ * queue, from the ledger state the queues themselves are built on.
+ */
+export interface QueueDiagnostic {
+  queue: string
+  depth: number
+  oldestAt?: string
+  states: Record<string, number>
+}
+
+/** The read-only status snapshot a dashboard, SDK, or operator asks for. */
+export interface HiveStatusSnapshot {
+  version: string
+  scope: { workspace: string; project: string }
+  runs: { live: number; total: number }
+  work: { open: number; inFlight: number; total: number }
+  queues: QueueDiagnostic[]
+  triggerIngress: { paused: boolean; breakerFailures: number; recentAccepted: number }
+  telemetryEnabled: boolean
+}
+
+/** One recorded retrieval trajectory (§7 Phase 8 observability). */
+export interface RetrievalTrajectory {
+  id: string
+  scope: ScopeRef
+  query: string
+  tiers: string[]
+  hitCount: number
+  topHitUri?: string
+  durationMs: number
+  occurredAt: string
+}
+
+/** What one voice turn asked for, and how it was answered. */
+export type VoiceOutcome =
+  | { kind: 'answered'; operation: string; data: unknown }
+  | { kind: 'refused'; reason: string; detail: string }
+
+export interface VoiceTurnResult {
+  utterance: string
+  parsedOperation?: string
+  outcome: VoiceOutcome
+  occurredAt: string
 }

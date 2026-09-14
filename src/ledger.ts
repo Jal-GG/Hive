@@ -32,6 +32,9 @@ import {
   TriggerRecord,
   ObservationMetric,
   WorkflowSchedule,
+  WorkflowWatch,
+  QueueDiagnostic,
+  RetrievalTrajectory,
   WorkDependency,
   WorkItem,
   WorkItemStatus,
@@ -776,6 +779,24 @@ export class Ledger {
     const projectId = createId()
     this.statement('INSERT INTO projects(id, workspace_id, name, created_at) VALUES (?, ?, ?, ?)').run(projectId, workspaceId, name, this.timestamp())
     return projectId
+  }
+
+  /**
+   * Restore provisioning: re-create a scope carrying its *original* ids, so
+   * replayed events' scope references resolve on the restored ledger. The
+   * regular creators mint fresh ids, which is right for live use and wrong for
+   * restore. No-op when the ids already exist; a name that collides with a
+   * different id fails loudly rather than silently re-pointing the scope.
+   */
+  restoreScope(scope: ScopeRef): void {
+    validateScopeName(scope.workspaceName, 'workspace name')
+    validateScopeName(scope.projectName, 'project name')
+    if (!this.statement('SELECT 1 FROM workspaces WHERE id = ?').get(scope.workspaceId)) {
+      this.statement('INSERT INTO workspaces(id, name, created_at) VALUES (?, ?, ?)').run(scope.workspaceId, scope.workspaceName, this.timestamp())
+    }
+    if (!this.statement('SELECT 1 FROM projects WHERE id = ?').get(scope.projectId)) {
+      this.statement('INSERT INTO projects(id, workspace_id, name, created_at) VALUES (?, ?, ?, ?)').run(scope.projectId, scope.workspaceId, scope.projectName, this.timestamp())
+    }
   }
 
   projectByName(workspaceId: string, name: string): string | undefined {
@@ -2055,6 +2076,158 @@ export class Ledger {
   updateWorkflowSchedule(id: string, state: WorkflowSchedule['state'], nextRunAt: string, updatedAt: string): WorkflowSchedule | undefined {
     const result = this.statement('UPDATE workflow_schedules SET state = ?, next_run_at = ?, updated_at = ? WHERE id = ?').run(state, nextRunAt, updatedAt, id)
     return result.changes === 1 ? this.listAllWorkflowSchedules().find((schedule) => schedule.id === id) : undefined
+  }
+
+  // --- Context watches (§7 Phase 8 "watches") ---
+
+  upsertWorkflowWatch(watch: WorkflowWatch): void {
+    this.statement(`INSERT INTO workflow_watches
+      (id, workspace_id, project_id, workflow_id, uri_prefix, state, last_observed, next_run_at, created_by, created_at, updated_at)
+      VALUES (@id, @workspaceId, @projectId, @workflowId, @uriPrefix, @state, @lastObserved, @nextRunAt, @createdBy, @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET workflow_id = excluded.workflow_id, uri_prefix = excluded.uri_prefix,
+        state = excluded.state, last_observed = excluded.last_observed, next_run_at = excluded.next_run_at, updated_at = excluded.updated_at`).run({
+      id: watch.id, workspaceId: watch.scope.workspaceId, projectId: watch.scope.projectId, workflowId: watch.workflowId,
+      uriPrefix: watch.uriPrefix, state: watch.state, lastObserved: watch.lastObserved ?? null, nextRunAt: watch.nextRunAt,
+      createdBy: watch.createdBy, createdAt: watch.createdAt, updatedAt: watch.updatedAt,
+    })
+  }
+
+  listWorkflowWatches(scope: ScopeRef, state?: WorkflowWatch['state']): WorkflowWatch[] {
+    const values: unknown[] = [scope.workspaceId, scope.projectId]
+    let sql = `SELECT w.*, ws.name AS workspace_name, p.name AS project_name FROM workflow_watches w JOIN workspaces ws ON ws.id = w.workspace_id JOIN projects p ON p.id = w.project_id WHERE w.workspace_id = ? AND w.project_id = ?`
+    if (state) { sql += ' AND w.state = ?'; values.push(state) }
+    sql += ' ORDER BY w.next_run_at, w.id'
+    return (this.statement(sql).all(...values) as Array<{ id: string; project_id: string; workflow_id: string; uri_prefix: string; state: WorkflowWatch['state']; last_observed: string | null; next_run_at: string; created_by: string; created_at: string; updated_at: string } & ScopeRow>).map((row) => ({ id: row.id, scope: toScope(row), workflowId: row.workflow_id, uriPrefix: row.uri_prefix, state: row.state, lastObserved: row.last_observed ?? undefined, nextRunAt: row.next_run_at, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }))
+  }
+
+  workflowWatch(id: string): WorkflowWatch | undefined {
+    return this.listAllWorkflowWatches().find((watch) => watch.id === id)
+  }
+
+  dueWorkflowWatches(at: string): WorkflowWatch[] {
+    return this.listAllWorkflowWatches().filter((watch) => watch.state === 'enabled' && watch.nextRunAt <= at)
+  }
+
+  private listAllWorkflowWatches(): WorkflowWatch[] {
+    return (this.statement(`SELECT w.*, ws.name AS workspace_name, p.name AS project_name FROM workflow_watches w JOIN workspaces ws ON ws.id = w.workspace_id JOIN projects p ON p.id = w.project_id ORDER BY w.next_run_at, w.id`).all() as Array<{ id: string; project_id: string; workflow_id: string; uri_prefix: string; state: WorkflowWatch['state']; last_observed: string | null; next_run_at: string; created_by: string; created_at: string; updated_at: string } & ScopeRow>).map((row) => ({ id: row.id, scope: toScope(row), workflowId: row.workflow_id, uriPrefix: row.uri_prefix, state: row.state, lastObserved: row.last_observed ?? undefined, nextRunAt: row.next_run_at, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }))
+  }
+
+  deleteWorkflowWatch(id: string): boolean {
+    return this.statement('DELETE FROM workflow_watches WHERE id = ?').run(id).changes === 1
+  }
+
+  updateWorkflowWatchObservation(id: string, lastObserved: string, nextRunAt: string, updatedAt: string): WorkflowWatch | undefined {
+    const result = this.statement('UPDATE workflow_watches SET last_observed = ?, next_run_at = ?, updated_at = ? WHERE id = ?').run(lastObserved, nextRunAt, updatedAt, id)
+    return result.changes === 1 ? this.listAllWorkflowWatches().find((watch) => watch.id === id) : undefined
+  }
+
+  /** Advances only the next observation time, leaving the baseline fingerprint untouched. */
+  deferWorkflowWatch(id: string, nextRunAt: string, updatedAt: string): WorkflowWatch | undefined {
+    const result = this.statement('UPDATE workflow_watches SET next_run_at = ?, updated_at = ? WHERE id = ?').run(nextRunAt, updatedAt, id)
+    return result.changes === 1 ? this.listAllWorkflowWatches().find((watch) => watch.id === id) : undefined
+  }
+
+  setWorkflowWatchState(id: string, state: WorkflowWatch['state'], updatedAt: string): WorkflowWatch | undefined {
+    const result = this.statement('UPDATE workflow_watches SET state = ?, updated_at = ? WHERE id = ?').run(state, updatedAt, id)
+    return result.changes === 1 ? this.listAllWorkflowWatches().find((watch) => watch.id === id) : undefined
+  }
+
+  // --- Retrieval trajectories (§7 Phase 8 observability) ---
+
+  insertRetrievalTrajectory(trajectory: RetrievalTrajectory): void {
+    this.statement(`INSERT INTO retrieval_trajectories
+      (id, workspace_id, project_id, query, tiers, hit_count, top_hit_uri, duration_ms, occurred_at)
+      VALUES (@id, @workspaceId, @projectId, @query, @tiers, @hitCount, @topHitUri, @durationMs, @occurredAt)`).run({
+      id: trajectory.id, workspaceId: trajectory.scope.workspaceId, projectId: trajectory.scope.projectId,
+      query: trajectory.query, tiers: JSON.stringify(trajectory.tiers), hitCount: trajectory.hitCount,
+      topHitUri: trajectory.topHitUri ?? null, durationMs: trajectory.durationMs, occurredAt: trajectory.occurredAt,
+    })
+  }
+
+  listRetrievalTrajectories(scope: ScopeRef, limit = 50): RetrievalTrajectory[] {
+    return (this.statement(`SELECT t.*, ws.name AS workspace_name, p.name AS project_name
+      FROM retrieval_trajectories t JOIN workspaces ws ON ws.id = t.workspace_id JOIN projects p ON p.id = t.project_id
+      WHERE t.workspace_id = ? AND t.project_id = ? ORDER BY t.occurred_at DESC, t.id LIMIT ?`).all(scope.workspaceId, scope.projectId, limit) as Array<{ id: string; query: string; tiers: string; hit_count: number; top_hit_uri: string | null; duration_ms: number; occurred_at: string } & ScopeRow>).map((row) => ({ id: row.id, scope: toScope(row), query: row.query, tiers: JSON.parse(row.tiers), hitCount: row.hit_count, topHitUri: row.top_hit_uri ?? undefined, durationMs: row.duration_ms, occurredAt: row.occurred_at }))
+  }
+
+  // --- Queue diagnostics (§7 Phase 8 "queue diagnostics") ---
+
+  /**
+   * The durable queues are mail queues plus the task ledger's status classes;
+   * each row is a count over ledger state, so diagnostics never hold state of
+   * their own. `dispatch` and the named task queues appear with depth 0 when
+   * empty rather than being omitted — an empty queue is a fact, not an absence.
+   */
+  queueDiagnostics(scope: ScopeRef): QueueDiagnostic[] {
+    const mailStates = this.statement(`SELECT queue, state, COUNT(*) AS depth, MIN(created_at) AS oldest_at
+      FROM messages WHERE workspace_id = ? AND project_id = ? GROUP BY queue, state ORDER BY queue, state`).all(scope.workspaceId, scope.projectId) as Array<{ queue: string; state: string; depth: number; oldest_at: string }>
+    const queues = new Map<string, QueueDiagnostic>()
+    for (const row of mailStates) {
+      const queue = row.queue ?? 'unrouted'
+      const entry = queues.get(queue) ?? { queue, depth: 0, states: {} }
+      entry.depth += row.depth
+      entry.states[row.state] = (entry.states[row.state] ?? 0) + row.depth
+      if (!entry.oldestAt || row.oldest_at < entry.oldestAt) entry.oldestAt = row.oldest_at
+      queues.set(queue, entry)
+    }
+    for (const queue of ['supervisor', 'unrouted']) {
+      queues.get(queue) ?? queues.set(queue, { queue, depth: 0, states: {} })
+    }
+    return [...queues.values()].sort((a, b) => (a.queue < b.queue ? -1 : 1))
+  }
+
+  // --- Federation quarantine (§7 Phase 9): imported peer events, held for review ---
+
+  insertFederationQuarantine(entry: { id: string; peerId: string; event: unknown; receivedAt: string; state: string }): void {
+    this.statement('INSERT INTO federation_quarantine (id, peer_id, event_json, received_at, state) VALUES (?, ?, ?, ?, ?)')
+      .run(entry.id, entry.peerId, JSON.stringify(entry.event), entry.receivedAt, entry.state)
+  }
+
+  /** True when this peer event is already held, so re-import is a no-op rather than a duplicate row. */
+  federationQuarantineHas(peerId: string, eventId: string): boolean {
+    const rows = this.statement(`SELECT id FROM federation_quarantine WHERE peer_id = ? AND json_extract(event_json, '$.eventId') = ? LIMIT 1`).all(peerId, eventId)
+    return rows.length > 0
+  }
+
+  // --- Federation replay state (§7 Phase 9): the durable per-peer import cursor ---
+
+  federationReplayState(peerId: string): { lastSequence: number; lastPageChecksum: string; manifestChecksum: string; updatedAt: string } | undefined {
+    const row = this.statement('SELECT last_sequence, last_page_checksum, manifest_checksum, updated_at FROM federation_replay_state WHERE peer_id = ?').get(peerId) as
+      | { last_sequence: number; last_page_checksum: string; manifest_checksum: string; updated_at: string }
+      | undefined
+    return row ? { lastSequence: row.last_sequence, lastPageChecksum: row.last_page_checksum, manifestChecksum: row.manifest_checksum, updatedAt: row.updated_at } : undefined
+  }
+
+  setFederationReplayState(peerId: string, lastSequence: number, lastPageChecksum: string, updatedAt: string, manifestChecksum = ''): void {
+    this.statement(`INSERT INTO federation_replay_state (peer_id, last_sequence, last_page_checksum, manifest_checksum, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(peer_id) DO UPDATE SET last_sequence = excluded.last_sequence, last_page_checksum = excluded.last_page_checksum, manifest_checksum = excluded.manifest_checksum, updated_at = excluded.updated_at`).run(peerId, lastSequence, lastPageChecksum, manifestChecksum, updatedAt)
+  }
+
+  listFederationQuarantine(peerId?: string, state = 'pending'): Array<{ id: string; peerId: string; event: unknown; receivedAt: string; state: string }> {
+    const rows = peerId === undefined
+      ? this.statement('SELECT * FROM federation_quarantine WHERE state = ? ORDER BY received_at, id').all(state) as Array<{ id: string; peer_id: string; event_json: string; received_at: string; state: string }>
+      : this.statement('SELECT * FROM federation_quarantine WHERE peer_id = ? AND state = ? ORDER BY received_at, id').all(peerId, state) as Array<{ id: string; peer_id: string; event_json: string; received_at: string; state: string }>
+    return rows.map((row) => ({ id: row.id, peerId: row.peer_id, event: JSON.parse(row.event_json), receivedAt: row.received_at, state: row.state }))
+  }
+
+  countFederationQuarantine(state = 'pending'): number {
+    return (this.statement('SELECT COUNT(*) AS count FROM federation_quarantine WHERE state = ?').get(state) as { count: number }).count
+  }
+
+  /**
+   * An operator's explicit promotion decision: the only path out of quarantine.
+   * The decision is audited — who decided, what record, and when — because a
+   * promoted peer event is adopted evidence and must be traceable (§7 exit gate:
+   * "an audit trail for recovery decisions").
+   */
+  setFederationQuarantineState(id: string, state: 'promoted' | 'rejected', actor?: ActorContext): boolean {
+    const decided = this.statement('UPDATE federation_quarantine SET state = ? WHERE id = ? AND state = \'pending\'').run(state, id).changes === 1
+    if (decided && actor) {
+      const row = this.statement('SELECT peer_id, event_json FROM federation_quarantine WHERE id = ?').get(id) as { peer_id: string; event_json: string } | undefined
+      const eventId = row ? (JSON.parse(row.event_json) as { eventId?: string }).eventId : undefined
+      this.recordAudit(actor.actorId, `federation.quarantine.${state}`, { quarantineId: id, peerId: row?.peer_id, eventId })
+    }
+    return decided
   }
 
   // --- Durable control-plane settings (§7 Phase 8) ---

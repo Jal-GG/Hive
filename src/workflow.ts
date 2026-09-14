@@ -1,4 +1,4 @@
-import { ActorContext, IssueType, ScopeRef, TriggerRecord, WorkflowDefinition, WorkflowRun, WorkflowStep, WorkflowSchedule } from './contracts.js'
+import { ActorContext, IssueType, ScopeRef, TriggerRecord, WorkflowDefinition, WorkflowRun, WorkflowStep, WorkflowSchedule, WorkflowWatch } from './contracts.js'
 import { AdmissionRefusal, TriggerAdmission, TriggerAdmissionPolicy } from './admission.js'
 import { assertCapability } from './capabilities.js'
 import { HiveError } from './errors.js'
@@ -8,10 +8,20 @@ import { WorkBoard } from './work/board.js'
 import { workEvent } from './work/events.js'
 
 const versionPattern = /^\d+\.\d+\.\d+$/
-const triggerKinds: readonly TriggerRecord['kind'][] = ['manual', 'webhook', 'github', 'slack', 'feed', 'schedule']
+const triggerKinds: readonly TriggerRecord['kind'][] = ['manual', 'webhook', 'github', 'slack', 'feed', 'schedule', 'watch']
 
 /** The control_settings key holding the operator's persisted ingress policy. */
 export const admissionSettingKey = 'trigger.admission'
+
+/**
+ * What a watch observes, supplied by the host rather than imported into the
+ * workflow service: the fingerprint of everything under a URI prefix. The
+ * context filesystem owns the content; this service only compares fingerprints.
+ */
+export interface WorkflowWatchSource {
+  /** Deterministic fingerprint of the nodes under a canonical URI prefix. */
+  fingerprint(scope: ScopeRef, uriPrefix: string): string
+}
 
 export interface WorkflowServiceOptions extends ClockOptions {
   ledger: Ledger
@@ -20,6 +30,8 @@ export interface WorkflowServiceOptions extends ClockOptions {
   admission?: TriggerAdmissionPolicy
   /** Cost incurred in a scope, in USD, for the spend cap. Absent means uncapped. */
   spend?: (scope: ScopeRef) => number
+  /** Context observation source for watches. Absent means watches never fire. */
+  watchSource?: WorkflowWatchSource
 }
 
 export interface TriggerInput {
@@ -35,11 +47,13 @@ export class WorkflowService {
   private readonly board: WorkBoard
   private readonly now: Clock
   private readonly admission: TriggerAdmission
+  private readonly watchSource?: WorkflowWatchSource
 
   constructor(options: WorkflowServiceOptions) {
     this.ledger = options.ledger
     this.board = options.board
     this.now = resolveClock(options)
+    this.watchSource = options.watchSource
     this.admission = new TriggerAdmission(options.admission ?? {}, {
       now: this.now,
       admittedSince: (scope, since) => this.ledger.listWorkflowRuns(scope).filter((run) => run.createdAt >= since).length,
@@ -198,7 +212,87 @@ export class WorkflowService {
       this.ledger.updateWorkflowSchedule(schedule.id, 'enabled', new Date(at.getTime() + schedule.intervalMs).toISOString(), timestamp)
       triggered += 1
     }
+    triggered += this.tickWatches(actor, at)
     return triggered
+  }
+
+  /**
+   * The watch pass (§7 Phase 8 "watches"). Each due watch's prefix is
+   * fingerprinted; a fingerprint that moved since the last observation enqueues
+   * the workflow with the change as its trigger. The observation is then
+   * advanced either way, so a watch that fired cannot fire again for the same
+   * content and a watch that found nothing new still learns what "unchanged"
+   * currently is.
+   *
+   * The first observation of a watch is a baseline, not a firing: registering a
+   * watch over content that already exists must not immediately enqueue work —
+   * that is the difference between "watch this" and "run this".
+   */
+  private tickWatches(actor: ActorContext, at: Date): number {
+    if (!this.watchSource) return 0
+    const timestamp = at.toISOString()
+    let triggered = 0
+    for (const watch of this.ledger.dueWorkflowWatches(timestamp)) {
+      let fingerprint: string
+      try {
+        fingerprint = this.watchSource.fingerprint(watch.scope, watch.uriPrefix)
+      } catch {
+        // An unreadable prefix is an observation failure, not a trigger: the
+        // watch keeps its state — including an absent baseline, so the first
+        // successful observation still baselines rather than firing — and
+        // retries next pass.
+        this.ledger.deferWorkflowWatch(watch.id, new Date(at.getTime() + 60_000).toISOString(), timestamp)
+        continue
+      }
+      const nextAt = new Date(at.getTime() + 60_000).toISOString()
+      if (watch.lastObserved !== undefined && fingerprint !== watch.lastObserved) {
+        try {
+          this.trigger(actor, watch.scope, { id: `watch:${watch.id}:${fingerprint}`, kind: 'watch', workflowId: watch.workflowId, payload: { uriPrefix: watch.uriPrefix, fingerprint } })
+          triggered += 1
+        } catch {
+          // Refused or failed: recorded in trigger history by `trigger`; the
+          // observation still advances so a refused watch does not hot-loop.
+        }
+      }
+      this.ledger.updateWorkflowWatchObservation(watch.id, fingerprint, nextAt, timestamp)
+    }
+    return triggered
+  }
+
+  // --- Context watches (§7 Phase 8 "watches") ---
+
+  watch(actor: ActorContext, input: Omit<WorkflowWatch, 'scope' | 'createdBy' | 'createdAt' | 'updatedAt'> & { scope: ScopeRef }): WorkflowWatch {
+    assertCapability(actor.capabilities, 'work:mutate')
+    if (!input.id || !/^[a-z0-9][a-z0-9._-]*$/.test(input.id)) throw new HiveError('WATCH_INVALID', 'Watch id must be lowercase and path-safe')
+    if (!this.ledger.workflow(input.workflowId)) throw new HiveError('WORKFLOW_NOT_FOUND', `Workflow ${input.workflowId} was not found`)
+    const timestamp = this.now().toISOString()
+    const record: WorkflowWatch = { ...input, createdBy: actor.actorId, createdAt: timestamp, updatedAt: timestamp }
+    this.ledger.upsertWorkflowWatch(record)
+    this.record(actor, input.scope, 'watch-registered', `watch:${input.id}`, timestamp, { workflowId: input.workflowId, uriPrefix: input.uriPrefix })
+    return record
+  }
+
+  watches(scope: ScopeRef, state?: WorkflowWatch['state']): WorkflowWatch[] {
+    return this.ledger.listWorkflowWatches(scope, state)
+  }
+
+  setWatchState(actor: ActorContext, id: string, state: WorkflowWatch['state']): WorkflowWatch {
+    assertCapability(actor.capabilities, 'work:mutate')
+    const watch = this.ledger.workflowWatch(id)
+    if (!watch) throw new HiveError('WATCH_NOT_FOUND', `Watch ${id} was not found`)
+    const updated = this.ledger.setWorkflowWatchState(id, state, this.now().toISOString())
+    if (!updated) throw new HiveError('WATCH_NOT_FOUND', `Watch ${id} was not found`)
+    this.record(actor, watch.scope, state === 'enabled' ? 'watch-enabled' : 'watch-disabled', `watch-state:${id}`, this.now().toISOString(), { id, state })
+    return updated
+  }
+
+  removeWatch(actor: ActorContext, id: string): boolean {
+    assertCapability(actor.capabilities, 'work:mutate')
+    const watch = this.ledger.workflowWatch(id)
+    if (!watch) return false
+    this.ledger.deleteWorkflowWatch(id)
+    this.record(actor, watch.scope, 'watch-removed', `watch-removed:${id}:${this.now().toISOString()}`, this.now().toISOString(), { id })
+    return true
   }
 
   /**

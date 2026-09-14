@@ -153,10 +153,12 @@ describe('MCP stdio surface', () => {
     expect(names.filter((name) => name.startsWith('control_')).sort()).toEqual([
       'control_admission',
       'control_metrics',
+      'control_queues',
       'control_skills',
       'control_triggers',
       'control_workflow_runs',
       'control_workflow_schedules',
+      'control_workflow_watches',
       'control_workflows',
     ])
 

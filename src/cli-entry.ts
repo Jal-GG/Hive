@@ -1,4 +1,5 @@
 import { ContextBrowser } from './context/browser.js'
+import { join } from 'node:path'
 import { ContextFilesystem } from './context/context-filesystem.js'
 import { ObservabilityService, SignedWebhookAdapter } from './observability.js'
 import { Ledger } from './ledger.js'
@@ -10,12 +11,13 @@ import { HiveMcpServer } from './interfaces/mcp/hive-mcp-server.js'
 import { WebhookIngressServer, type WebhookKind } from './interfaces/http/webhook-ingress.js'
 import { ControlHttpServer } from './interfaces/http/control-http-server.js'
 import { runWorkflowCli } from './interfaces/cli/workflow-cli.js'
+import { runRemoteCli, runFederateCli, runDeployCli } from './interfaces/cli/remote-cli.js'
 import { WorkflowService } from './workflow.js'
 import { WorkBoard } from './work/board.js'
 import type { TriggerAdmissionPolicy } from './admission.js'
 import type { ActorContext, Capability, ScopeRef, TriggerRecord } from './contracts.js'
 
-const capabilities: Capability[] = ['workspace:read', 'workspace:write', 'work:dispatch', 'work:mutate', 'runtime:read', 'context:read']
+const capabilities: Capability[] = ['workspace:read', 'workspace:write', 'work:dispatch', 'work:mutate', 'runtime:read', 'context:read', 'federation:review']
 const operator: ActorContext = { actorId: process.env.HIVE_ACTOR ?? 'cli-operator', actorType: 'operator', displayName: 'Hive CLI', source: 'cli', capabilities }
 
 const ingressKinds: readonly WebhookKind[] = ['webhook', 'github', 'slack', 'feed']
@@ -138,6 +140,11 @@ export function usage(): string {
     '  ingress                Serve the signed webhook ingress on loopback',
     '  dashboard              Serve the read-only web dashboard on loopback',
     '  release                Assemble a release directory (--channel, --out)',
+    '  remote <operation>     Phase 9 remote plane: serve an agent, or run drills',
+    '                         (`hive remote --help` lists the operations)',
+    '  federate <operation>   Phase 9 federation: export, import, quarantine review',
+    '                         (`hive federate --help` lists the operations)',
+    '  deploy <kind>          Materialize a deployment profile (docker|compose|systemd|companion|reverse-proxy)',
     '',
     'Env:',
     '  HIVE_LEDGER            Ledger file (default .hive/hive.db)',
@@ -263,6 +270,34 @@ async function runRelease(argv: readonly string[]): Promise<void> {
   process.stdout.write(`${JSON.stringify({ directory: assembled.directory, manifest: assembled.manifest, files: assembled.files }, null, 2)}\n`)
 }
 
+/** Phase 9's remote plane: agent serve, PKI, relay, drills (§7 Phase 9). */
+async function runRemote(argv: readonly string[]): Promise<void> {
+  const db = ledger()
+  const scope = ensureScope(db, argv)
+  const stateRoot = process.env.HIVE_STATE_ROOT ?? '.hive'
+  const contextRoot = process.env.HIVE_CONTEXT_ROOT ?? join(stateRoot, 'context')
+  const output = await runRemoteCli({ ledger: db, scope, stateRoot, packageRoot: process.cwd(), contextRoot }, operator, argv.slice(1))
+  process.stdout.write(`${output}\n`)
+}
+
+/** Phase 9 federation: export/import/quarantine review (§7 Phase 9). */
+async function runFederate(argv: readonly string[]): Promise<void> {
+  const db = ledger()
+  const scope = ensureScope(db, argv)
+  const stateRoot = process.env.HIVE_STATE_ROOT ?? '.hive'
+  const output = await runFederateCli({ ledger: db, scope, stateRoot, packageRoot: process.cwd() }, operator, argv.slice(1))
+  process.stdout.write(`${output}\n`)
+}
+
+/** Phase 9 deployment profiles (§7 Phase 9). */
+async function runDeploy(argv: readonly string[]): Promise<void> {
+  const db = ledger()
+  const scope = ensureScope(db, argv)
+  const stateRoot = process.env.HIVE_STATE_ROOT ?? '.hive'
+  const output = await runDeployCli({ ledger: db, scope, stateRoot, packageRoot: process.cwd() }, argv.slice(1))
+  process.stdout.write(`${output}\n`)
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   const command = argv[0]
@@ -275,6 +310,9 @@ async function main(): Promise<void> {
   if (command === 'ingress') return runIngress(argv)
   if (command === 'dashboard') return runDashboard(argv)
   if (command === 'release') return runRelease(argv)
+  if (command === 'remote') return runRemote(argv)
+  if (command === 'federate') return runFederate(argv)
+  if (command === 'deploy') return runDeploy(argv)
   throw new Error(`Unsupported command: ${command}`)
 }
 

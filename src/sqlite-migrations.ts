@@ -1,4 +1,4 @@
-export const schemaVersion = 18
+export const schemaVersion = 20
 
 export const migrations: Record<number, string> = {
   1: `
@@ -438,5 +438,32 @@ export const migrations: Record<number, string> = {
       occurred_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS retrieval_trajectories_scope_idx ON retrieval_trajectories(workspace_id, project_id, occurred_at);
+  `,
+  19: `
+    -- Phase 9: federation quarantine. Imported peer events land here first,
+    -- reviewed evidence rather than adopted state (§7 Phase 9). Promotion out
+    -- of quarantine is an explicit operator decision, never automatic.
+    CREATE TABLE IF NOT EXISTS federation_quarantine (
+      id TEXT PRIMARY KEY,
+      peer_id TEXT NOT NULL,
+      event_json TEXT NOT NULL,
+      received_at TEXT NOT NULL,
+      state TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS federation_quarantine_peer_idx ON federation_quarantine(peer_id, state, received_at);
+  `,
+  20: `
+    -- Phase 9: federation replay state. One row per peer: the last page
+    -- sequence imported (the replay cursor), the page checksum (idempotent
+    -- re-import of the same page is a no-op, not a duplicate quarantine), and
+    -- the peer manifest checksum (a peer whose manifest changes mid-stream is
+    -- a different contract, not a continuation of the same one).
+    CREATE TABLE IF NOT EXISTS federation_replay_state (
+      peer_id TEXT PRIMARY KEY,
+      last_sequence INTEGER NOT NULL,
+      last_page_checksum TEXT NOT NULL,
+      manifest_checksum TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
   `,
 }

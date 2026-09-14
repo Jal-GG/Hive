@@ -25,7 +25,11 @@ const agent = testAgent('worker-1', capabilities)
 afterEach(() => resetFakeSessions())
 
 describe('verified merge queue — the Phase 7 gate', () => {
-  it('lands two concurrent branches through gates in one batch', async () => {
+  // Each test drives real git worktrees, gates, and pushes; the default 5s
+  // budget is a unit-test budget and these are integration scenarios.
+  const slow = { timeout: 60_000 }
+
+  it('lands two concurrent branches through gates in one batch', slow, async () => {
     const harness = mergeQueueHarness([operator])
     harness.branchWithCommit('feature-a', 'feature-a.txt', 'from branch a\n')
     harness.branchWithCommit('feature-b', 'feature-b.txt', 'from branch b\n')
@@ -43,7 +47,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('invalidates preparation when the target moves, then lands against the new head', async () => {
+  it('invalidates preparation when the target moves, then lands against the new head', slow, async () => {
     const harness = mergeQueueHarness([operator])
     harness.branchWithCommit('feature-a', 'feature-a.txt', 'from branch a\n')
     harness.queue.enqueue(operator, { sourceBranch: 'feature-a', targetBranch: 'main' })
@@ -64,7 +68,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('bisects a failing batch: the broken branch fails, the good ones still land', async () => {
+  it('bisects a failing batch: the broken branch fails, the good ones still land', slow, async () => {
     const harness = mergeQueueHarness([operator])
     harness.branchWithCommit('good-1', 'good-1.txt', 'good one\n')
     harness.branchWithCommit('bad', 'broken.txt', 'this branch breaks the gate\n')
@@ -95,7 +99,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('classifies conflicts, sends rework, and lands the rest', async () => {
+  it('classifies conflicts, sends rework, and lands the rest', slow, async () => {
     const harness = mergeQueueHarness([operator])
     // Two branches editing the same line of the same file conflict with each other.
     harness.branchWithCommit('conflict-a', 'README.md', '# version a\n')
@@ -122,7 +126,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('preserves a dirty integration worktree instead of force-deleting it', async () => {
+  it('preserves a dirty integration worktree instead of force-deleting it', slow, async () => {
     const harness = mergeQueueHarness([operator])
     // The dirty gate leaves an artifact behind only when the marker exists.
     harness.branchWithCommit('messy', 'dirty-marker.txt', 'make the gate dirty\n')
@@ -141,7 +145,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('closes a convoy exactly once, dispatches the next unblocked item, and counts stranded work', async () => {
+  it('closes a convoy exactly once, dispatches the next unblocked item, and counts stranded work', slow, async () => {
     const harness = mergeQueueHarness([operator, agent])
     harness.dispatcher.registerAgent(agent, { agentId: 'worker-1', profileId: fakeProfileId })
 
@@ -210,7 +214,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     natural.close()
   })
 
-  it('holds a protected target until an approver releases it, and never moves it before', async () => {
+  it('holds a protected target until an approver releases it, and never moves it before', slow, async () => {
     const harness = mergeQueueHarness([operator, agent])
     harness.branchWithCommit('hotfix', 'hotfix.txt', 'urgent fix\n')
     const before = harness.remoteHead(harness.protectedBranch)
@@ -250,7 +254,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('gates only protected targets, and a held request keeps its convoy open', async () => {
+  it('gates only protected targets, and a held request keeps its convoy open', slow, async () => {
     const harness = mergeQueueHarness([operator])
     // An unprotected target is unaffected: protection is opt-in, per branch.
     harness.branchWithCommit('plain', 'plain.txt', 'no approval needed\n')
@@ -284,7 +288,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('claims its target with a fencing token, and a second coordinator does not race it', async () => {
+  it('claims its target with a fencing token, and a second coordinator does not race it', slow, async () => {
     const harness = mergeQueueHarness([operator])
     harness.branchWithCommit('claimed', 'claimed.txt', 'claimed work\n')
     const request = harness.queue.enqueue(operator, { sourceBranch: 'claimed', targetBranch: 'main' })
@@ -316,7 +320,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('reports a landing as MERGED and a gate failure as MERGE_FAILED', async () => {
+  it('reports a landing as MERGED and a gate failure as MERGE_FAILED', slow, async () => {
     const harness = mergeQueueHarness([operator])
     harness.branchWithCommit('good', 'good.txt', 'fine\n')
     harness.queue.enqueue(operator, { sourceBranch: 'good', targetBranch: 'main' })
@@ -341,7 +345,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('serves the queue, graph, gate output, conflicts, and recovery to the desktop', async () => {
+  it('serves the queue, graph, gate output, conflicts, and recovery to the desktop', slow, async () => {
     const harness = mergeQueueHarness([operator])
     harness.branchWithCommit('ui-good', 'ui-good.txt', 'lands\n')
     harness.branchWithCommit('ui-bad', 'broken.txt', 'fails the gate\n')
@@ -395,7 +399,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('keeps the desktop merge queue read-only when no gates are configured', async () => {
+  it('keeps the desktop merge queue read-only when no gates are configured', slow, async () => {
     const harness = mergeQueueHarness([operator])
     // An install with no remote or gates: reads work, anything that moves a branch does not.
     const handlers = mergeIpcHandlers({
@@ -412,7 +416,7 @@ describe('verified merge queue — the Phase 7 gate', () => {
     harness.close()
   })
 
-  it('serves the queue through the CLI', async () => {
+  it('serves the queue through the CLI', slow, async () => {
     const harness = mergeQueueHarness([operator])
     harness.branchWithCommit('cli-branch', 'cli.txt', 'from the CLI\n')
     const surfaces = { ledger: harness.ledger, queue: harness.queue, convoys: harness.convoys }

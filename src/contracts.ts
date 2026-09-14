@@ -14,6 +14,9 @@ export type Capability =
   | 'context:write'
   | 'event:ingest'
   | 'backup:create'
+  /** Reviewing federation imports and deciding quarantined peer records. Separate from `context:read`
+   *  so a viewer can watch federation evidence without being able to adopt or reject it. */
+  | 'federation:review'
   /** Observing the roster, run state, and transcripts. Deliberately separate from `runtime:control`
    *  so a read-only viewer can watch a fleet it cannot start, steer, or stop. */
   | 'runtime:read'

@@ -781,6 +781,24 @@ export class Ledger {
     return projectId
   }
 
+  /**
+   * Restore provisioning: re-create a scope carrying its *original* ids, so
+   * replayed events' scope references resolve on the restored ledger. The
+   * regular creators mint fresh ids, which is right for live use and wrong for
+   * restore. No-op when the ids already exist; a name that collides with a
+   * different id fails loudly rather than silently re-pointing the scope.
+   */
+  restoreScope(scope: ScopeRef): void {
+    validateScopeName(scope.workspaceName, 'workspace name')
+    validateScopeName(scope.projectName, 'project name')
+    if (!this.statement('SELECT 1 FROM workspaces WHERE id = ?').get(scope.workspaceId)) {
+      this.statement('INSERT INTO workspaces(id, name, created_at) VALUES (?, ?, ?)').run(scope.workspaceId, scope.workspaceName, this.timestamp())
+    }
+    if (!this.statement('SELECT 1 FROM projects WHERE id = ?').get(scope.projectId)) {
+      this.statement('INSERT INTO projects(id, workspace_id, name, created_at) VALUES (?, ?, ?, ?)').run(scope.projectId, scope.workspaceId, scope.projectName, this.timestamp())
+    }
+  }
+
   projectByName(workspaceId: string, name: string): string | undefined {
     const row = this.statement('SELECT id FROM projects WHERE workspace_id = ? AND name = ?').get(workspaceId, name) as { id: string } | undefined
     return row?.id
@@ -2156,6 +2174,60 @@ export class Ledger {
       queues.get(queue) ?? queues.set(queue, { queue, depth: 0, states: {} })
     }
     return [...queues.values()].sort((a, b) => (a.queue < b.queue ? -1 : 1))
+  }
+
+  // --- Federation quarantine (§7 Phase 9): imported peer events, held for review ---
+
+  insertFederationQuarantine(entry: { id: string; peerId: string; event: unknown; receivedAt: string; state: string }): void {
+    this.statement('INSERT INTO federation_quarantine (id, peer_id, event_json, received_at, state) VALUES (?, ?, ?, ?, ?)')
+      .run(entry.id, entry.peerId, JSON.stringify(entry.event), entry.receivedAt, entry.state)
+  }
+
+  /** True when this peer event is already held, so re-import is a no-op rather than a duplicate row. */
+  federationQuarantineHas(peerId: string, eventId: string): boolean {
+    const rows = this.statement(`SELECT id FROM federation_quarantine WHERE peer_id = ? AND json_extract(event_json, '$.eventId') = ? LIMIT 1`).all(peerId, eventId)
+    return rows.length > 0
+  }
+
+  // --- Federation replay state (§7 Phase 9): the durable per-peer import cursor ---
+
+  federationReplayState(peerId: string): { lastSequence: number; lastPageChecksum: string; manifestChecksum: string; updatedAt: string } | undefined {
+    const row = this.statement('SELECT last_sequence, last_page_checksum, manifest_checksum, updated_at FROM federation_replay_state WHERE peer_id = ?').get(peerId) as
+      | { last_sequence: number; last_page_checksum: string; manifest_checksum: string; updated_at: string }
+      | undefined
+    return row ? { lastSequence: row.last_sequence, lastPageChecksum: row.last_page_checksum, manifestChecksum: row.manifest_checksum, updatedAt: row.updated_at } : undefined
+  }
+
+  setFederationReplayState(peerId: string, lastSequence: number, lastPageChecksum: string, updatedAt: string, manifestChecksum = ''): void {
+    this.statement(`INSERT INTO federation_replay_state (peer_id, last_sequence, last_page_checksum, manifest_checksum, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(peer_id) DO UPDATE SET last_sequence = excluded.last_sequence, last_page_checksum = excluded.last_page_checksum, manifest_checksum = excluded.manifest_checksum, updated_at = excluded.updated_at`).run(peerId, lastSequence, lastPageChecksum, manifestChecksum, updatedAt)
+  }
+
+  listFederationQuarantine(peerId?: string, state = 'pending'): Array<{ id: string; peerId: string; event: unknown; receivedAt: string; state: string }> {
+    const rows = peerId === undefined
+      ? this.statement('SELECT * FROM federation_quarantine WHERE state = ? ORDER BY received_at, id').all(state) as Array<{ id: string; peer_id: string; event_json: string; received_at: string; state: string }>
+      : this.statement('SELECT * FROM federation_quarantine WHERE peer_id = ? AND state = ? ORDER BY received_at, id').all(peerId, state) as Array<{ id: string; peer_id: string; event_json: string; received_at: string; state: string }>
+    return rows.map((row) => ({ id: row.id, peerId: row.peer_id, event: JSON.parse(row.event_json), receivedAt: row.received_at, state: row.state }))
+  }
+
+  countFederationQuarantine(state = 'pending'): number {
+    return (this.statement('SELECT COUNT(*) AS count FROM federation_quarantine WHERE state = ?').get(state) as { count: number }).count
+  }
+
+  /**
+   * An operator's explicit promotion decision: the only path out of quarantine.
+   * The decision is audited — who decided, what record, and when — because a
+   * promoted peer event is adopted evidence and must be traceable (§7 exit gate:
+   * "an audit trail for recovery decisions").
+   */
+  setFederationQuarantineState(id: string, state: 'promoted' | 'rejected', actor?: ActorContext): boolean {
+    const decided = this.statement('UPDATE federation_quarantine SET state = ? WHERE id = ? AND state = \'pending\'').run(state, id).changes === 1
+    if (decided && actor) {
+      const row = this.statement('SELECT peer_id, event_json FROM federation_quarantine WHERE id = ?').get(id) as { peer_id: string; event_json: string } | undefined
+      const eventId = row ? (JSON.parse(row.event_json) as { eventId?: string }).eventId : undefined
+      this.recordAudit(actor.actorId, `federation.quarantine.${state}`, { quarantineId: id, peerId: row?.peer_id, eventId })
+    }
+    return decided
   }
 
   // --- Durable control-plane settings (§7 Phase 8) ---

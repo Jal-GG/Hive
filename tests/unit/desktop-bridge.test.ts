@@ -110,6 +110,34 @@ describe('desktop host assembly', () => {
     desktop.close()
   })
 
+  it('reports each profile\'s credential presence as names, never values', async () => {
+    const repoRoot = gitRepository('desktop-credentials')
+    const desktop = startDesktopHost({
+      repoRoot,
+      hostEnv: { ANTHROPIC_API_KEY: 'sk-ant-test-value-that-must-never-cross-ipc', PATH: 'C:\\bin' },
+    })
+    const main = new IpcMainRecorder()
+    desktop.registerIpc(main)
+
+    const profiles = ok(await main.invoke(`${runtimeIpcPrefix}profiles`)) as Array<{
+      id: string
+      onPath?: boolean
+      credentials?: { present: string[]; missing: string[] }
+    }>
+    const claude = profiles.find((profile) => profile.id === 'claude')
+    // Presence comes from the same host env the launch would inherit, so the
+    // badge an operator sees and the launch itself cannot disagree.
+    expect(claude?.credentials?.present).toEqual(['ANTHROPIC_API_KEY'])
+    // The fake profile simulates its process, so it needs no executable; every
+    // real profile reports the PATH truth for this host.
+    const fake = profiles.find((profile) => profile.id === fakeProfileId)
+    expect(fake?.onPath).toBe(true)
+    expect(profiles.every((profile) => typeof profile.onPath === 'boolean')).toBe(true)
+    // A real key shape crossing the bridge would be a disclosure, not a report.
+    expect(JSON.stringify(profiles)).not.toContain('sk-ant-test-value')
+    desktop.close()
+  })
+
   it('launches, streams, and stops a fake run over the whole bridge', async () => {
     const repoRoot = gitRepository('desktop-launch')
     const desktop = startDesktopHost({ repoRoot, hostEnv: {} })

@@ -166,19 +166,19 @@ app.whenReady().then(async () => {
       if (!openedIngress) throw new Error('the Ingress tab is not present in the sidebar')
       steps.push('ingress panel opened')
 
-      // The office visualization (§7 Phase 8): a UI-only projection, so its smoke
-      // check is that it renders and contains no control that reaches the bridge —
-      // presence and read-only-ness, exactly what the plan gates on.
-      const openedOffice = (await page.executeJavaScript(
+      // The field visualization (§7 Phase 8, bees view): a UI-only projection of
+      // fleet state, so its smoke check is that it renders — presence, exactly
+      // what the plan gates on.
+      const openedBees = (await page.executeJavaScript(
         `(() => {
-          const button = [...document.querySelectorAll('button')].find((candidate) => candidate.textContent?.trim() === 'Office')
+          const button = [...document.querySelectorAll('button')].find((candidate) => candidate.textContent?.trim() === 'Bees')
           if (!button) return false
           button.click()
           return true
         })()`,
       )) as boolean
-      if (!openedOffice) throw new Error('the Office tab is not present in the sidebar')
-      steps.push('office view opened')
+      if (!openedBees) throw new Error('the Bees tab is not present in the top bar')
+      steps.push('field view opened')
 
       // The renderer's own view model runs on its own schedule, so the raw
       // invokes above cannot prove the UI is healthy. Wait for it to settle and

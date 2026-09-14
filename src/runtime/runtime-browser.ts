@@ -119,6 +119,13 @@ export class RuntimeBrowser {
             // The executable is named but never its arguments: a template can carry a key.
             executable: profile.executable,
             available: this.registry.has(profile.backend),
+            // Whether the executable resolves on this machine, so a picker offers
+            // only launches that could actually start.
+            onPath: this.manager.executableOnPath(profile.id),
+            // Names only: whether the host environment carries the keys this
+            // profile names. A missing key is why a launch would fail, and an
+            // operator should see that before clicking.
+            credentials: this.manager.credentialPresence(profile.id),
           }))
       case 'backends':
         return { backends: this.registry.backends(), transcripts: this.registry.transcriptAdapters() }

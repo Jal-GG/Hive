@@ -179,7 +179,7 @@ export class RunManager {
       branch: worktree.branch,
       originMarker: runtimeOriginMarker,
     }
-    const environment = resolveEnvironment({ policy: profile.environmentPolicy, identity, host: this.host })
+    const environment = resolveEnvironment({ policy: profile.environmentPolicy, identity, host: this.mergedHostEnv() })
     const cols = request.cols ?? this.cols
     const rows = request.rows ?? this.rows
 
@@ -267,7 +267,16 @@ export class RunManager {
    * "key present" badge and the launch itself can never disagree.
    */
   credentialPresence(profileId: string): CredentialPresence {
-    return credentialPresence(this.catalog.get(profileId).environmentPolicy, this.host)
+    return credentialPresence(this.catalog.get(profileId).environmentPolicy, this.mergedHostEnv())
+  }
+
+  private mergedHostEnv(): Record<string, string | undefined> {
+    const merged = { ...this.host }
+    const dbSettings = this.ledger.settingsWithPrefix('env:')
+    for (const [key, value] of Object.entries(dbSettings)) {
+      merged[key.substring(4)] = value
+    }
+    return merged
   }
 
   /**

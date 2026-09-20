@@ -17,6 +17,7 @@ import {
   Lease,
   MergeBatch,
   MergeGateResult,
+  
   MergeRequest,
   MergeRequestState,
   Message,
@@ -2235,6 +2236,12 @@ export class Ledger {
   setting(key: string): string | undefined {
     const row = this.statement('SELECT value FROM control_settings WHERE key = ?').get(key) as { value: string } | undefined
     return row?.value
+  }
+  settingsWithPrefix(prefix: string): Record<string, string> {
+    const rows = this.statement('SELECT key, value FROM control_settings WHERE key LIKE ?').all(`${prefix}%`) as { key: string; value: string }[]
+    const result: Record<string, string> = {}
+    for (const row of rows) result[row.key] = row.value
+    return result
   }
 
   setSetting(key: string, value: string, updatedAt: string): void {

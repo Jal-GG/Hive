@@ -47,10 +47,10 @@ export const mergeIpcPrefix = 'hive:merge:'
 export const controlIpcPrefix = 'hive:control:'
 
 /** Read-only views: workflows, their runs, ingress history, schedules, watches, skills, metrics, policy, queues. */
-export const controlBrowseOperationNames: readonly string[] = ['workflows', 'runs', 'triggers', 'schedules', 'watches', 'skills', 'metrics', 'admission', 'queues']
+export const controlBrowseOperationNames: readonly string[] = ['workflows', 'runs', 'triggers', 'schedules', 'watches', 'skills', 'metrics', 'admission', 'queues', 'settings']
 
 /** Operations that change state. Each is capability-checked in the service, not here. */
-export const controlControlOperationNames: readonly string[] = ['register', 'trigger', 'cancel', 'tick', 'pause', 'resume', 'schedule', 'schedule-state', 'watch', 'watch-state', 'watch-remove', 'voice', 'version']
+export const controlControlOperationNames: readonly string[] = ['register', 'trigger', 'cancel', 'tick', 'pause', 'resume', 'schedule', 'schedule-state', 'watch', 'watch-state', 'watch-remove', 'voice', 'version', 'settings-set']
 
 /**
  * The renderer-safe half of the runtime IPC surface: channel names, request and

@@ -44,6 +44,7 @@ export function controlIpcHandlers(surfaces: ControlIpcSurfaces, actor: ActorCon
           case 'metrics': return observability.metrics(actor, scope)
           case 'admission': return workflows.admissionState()
           case 'queues': return observability.queueDiagnostics(actor, scope)
+          case 'settings': return ledger.settingsWithPrefix('env:')
         }
       }),
     )
@@ -107,6 +108,10 @@ export function controlIpcHandlers(surfaces: ControlIpcSurfaces, actor: ActorCon
             return voice.turn(actor, required(body, 'utterance'))
           }
           case 'version': return { version: currentVersion(surfaces.packageRoot ?? process.cwd()) }
+          case 'settings-set': {
+            ledger.setSetting(required(body, 'key'), required(body, 'value'), new Date().toISOString())
+            return { success: true }
+          }
         }
       }),
     )

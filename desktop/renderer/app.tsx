@@ -131,7 +131,7 @@ interface WorktreePanelView {
   cleanup?: { allowed: boolean; blockedBy: string[] }
 }
 
-type Tab = 'hive' | 'bees' | 'comb' | 'ingress' | 'nectar' | 'gate'
+type Tab = 'hive' | 'bees' | 'comb' | 'ingress' | 'nectar' | 'gate' | 'settings'
 
 const tabs: readonly { id: Tab; label: string }[] = [
   { id: 'hive', label: 'Hive' },
@@ -140,6 +140,7 @@ const tabs: readonly { id: Tab; label: string }[] = [
   { id: 'ingress', label: 'Ingress' },
   { id: 'nectar', label: 'Nectar Store' },
   { id: 'gate', label: 'Gate' },
+  { id: 'settings', label: 'Settings' },
 ]
 
 const liveRunStates: readonly RunState[] = ['spawning', 'running', 'idle', 'completing']
@@ -154,6 +155,45 @@ const liveWorkStates: readonly WorkItemStatus[] = ['assigned', 'in_progress', 'r
  * bridges directly; they poll while the header and tab need them because those
  * planes have no push streams yet.
  */
+function SettingsPanel() {
+  const [settings, setSettings] = useState<Record<string, string>>({})
+  const [status, setStatus] = useState<string>('')
+  const fetchSettings = useCallback(async () => {
+    const result = await window.hive.control.invoke('settings')
+    if (result.ok) setSettings(result.data as Record<string, string>)
+  }, [])
+  useEffect(() => { void fetchSettings() }, [fetchSettings])
+  const handleSave = async (key: string, value: string) => {
+    setStatus('Saving...')
+    await window.hive.control.invoke('settings-set', { key, value })
+    setStatus('Saved')
+    setTimeout(() => setStatus(''), 2000)
+    await fetchSettings()
+  }
+  const keys = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL', 'GITHUB_TOKEN']
+  return (
+    <section className="flex min-h-0 flex-1 flex-col" aria-label="Settings">
+      <SectionHeader icon={<KeyRound className="h-3.5 w-3.5" />} label="Environment Settings" />
+      <div className="mt-2 flex flex-col gap-3 overflow-y-auto pr-2">
+         {keys.map(key => (
+           <div key={key} className="panel-soft rounded-lg px-3 py-3">
+             <label className="font-mono text-[11px] text-hive-300 block mb-1.5">{key}</label>
+             <input 
+               className="field w-full"
+               type={key.includes('KEY') || key.includes('TOKEN') ? 'password' : 'text'}
+               value={settings[`env:${key}`] || ''}
+               onChange={(e) => setSettings({ ...settings, [`env:${key}`]: e.target.value })}
+               onBlur={(e) => void handleSave(`env:${key}`, e.target.value)}
+               placeholder={`Enter ${key} (stored locally)`}
+             />
+           </div>
+         ))}
+         {status && <p className="text-meadow-400 font-mono text-[10px] mt-1 ml-1">{status}</p>}
+      </div>
+    </section>
+  )
+}
+
 function App({ model }: { model: RuntimeViewModel }) {
   const [state, setState] = useState<RuntimeViewState>(() => model.state())
   const [launchPrompt, setLaunchPrompt] = useState('')
@@ -464,7 +504,7 @@ function App({ model }: { model: RuntimeViewModel }) {
         <aside className="flex w-80 shrink-0 flex-col border-r border-hive-700 bg-hive-900">
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
             <AnimatePresence mode="wait">
-              {(tab === 'hive' || tab === 'bees') && (
+              {(tab === 'hive' || tab === 'bees' || tab === 'settings') && (
                 <motion.div
                   key="hive-side"
                   initial={{ opacity: 0 }}
@@ -876,6 +916,8 @@ function App({ model }: { model: RuntimeViewModel }) {
               </div>
             </section>
           )}
+
+          {tab === 'settings' && <SettingsPanel />}
 
           <section
             className={`panel flex min-h-0 flex-col overflow-hidden rounded-lg ${

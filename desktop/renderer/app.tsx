@@ -15,9 +15,11 @@ import {
   KeyRound,
   ListChecks,
   Map,
+  Moon,
   Plus,
   Send,
   Square,
+  Sun,
   X,
   Zap,
 } from 'lucide-react'
@@ -202,6 +204,17 @@ function App({ model }: { model: RuntimeViewModel }) {
   const [message, setMessage] = useState('')
   const [taskTitle, setTaskTitle] = useState('')
   const [tab, setTab] = useState<Tab>('hive')
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system')
+
+  useEffect(() => {
+    const root = document.documentElement
+    if (theme === 'system') {
+      const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+      root.classList.toggle('light', !isDark)
+    } else {
+      root.classList.toggle('light', theme === 'light')
+    }
+  }, [theme])
   const [items, setItems] = useState<WorkItemView[]>([])
   const [agents, setAgents] = useState<AgentView[]>([])
   const [signals, setSignals] = useState<SignalView[]>([])
@@ -464,45 +477,20 @@ function App({ model }: { model: RuntimeViewModel }) {
         </nav>
 
         <div className="ml-auto flex items-center gap-4">
-          <span className="kpi" title="Bees flying now">
-            <span className="kpi-value text-meadow-400">{liveRuns}</span>
-            <span className="text-hive-400">LIVE</span>
-          </span>
-          <span className="kpi" title="Runs ended">
-            <span className="kpi-value text-hive-200">{outRuns}</span>
-            <span className="text-hive-400">OUT</span>
-          </span>
-          <span className="kpi" title="Open tasks on the board">
-            <span className="kpi-value text-hive-100">{openTasks}</span>
-            <span className="text-hive-400">OPEN</span>
-          </span>
-          <span className="kpi" title="Blocked tasks">
-            <span className="kpi-value text-ember-400">{blockedTasks}</span>
-            <span className="text-hive-400">BLOCKED</span>
-          </span>
-          <span className="kpi" title="Spend recorded this scope">
-            <span className="kpi-value text-honey-400">${reserves.toFixed(2)}</span>
-            <span className="text-hive-400">RESERVES</span>
-          </span>
-          <span className="kpi" title="Spend cap posture">
-            <span className="kpi-value text-honey-300">{capLabel(reserves, admission?.policy.spendCapUsd).toUpperCase()}</span>
-            <span className="text-hive-400">CAP</span>
-          </span>
-          <span className="kpi" title="Escalated runs">
-            <span className={`kpi-value ${escalations > 0 ? 'text-ember-400' : 'text-hive-300'}`}>{escalations}</span>
-            <span className="text-hive-400">ESCALATIONS</span>
-          </span>
-          <span className="kpi" title="Latest trigger at the hive mouth">
-            <span className={`pulse-dot ${admission?.policy.paused ? 'pulse-dot-paused' : ''}`} />
-            <span className="text-hive-300">ENTRANCE PULSE</span>
-            <span className="text-hive-100">{latestTrigger ? latestTrigger.kind : 'quiet'}</span>
-          </span>
+          <button
+            onClick={() => setTheme(t => t === 'dark' ? 'light' : t === 'light' ? 'system' : 'dark')}
+            className="btn btn-ghost ml-4 flex h-8 w-8 items-center justify-center rounded-full p-0 transition-transform"
+            title={`Theme: ${theme}`}
+            aria-label="Toggle theme"
+          >
+            {theme === 'dark' ? <Moon className="h-4 w-4" /> : theme === 'light' ? <Sun className="h-4 w-4" /> : <div className="h-4 w-4 rounded-sm border border-current" />}
+          </button>
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-80 shrink-0 flex-col border-r border-hive-700 bg-hive-900">
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+        <aside className="flex w-80 shrink-0 flex-col bg-hive-900">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             <AnimatePresence mode="wait">
               {(tab === 'hive' || tab === 'bees' || tab === 'settings') && (
                 <motion.div

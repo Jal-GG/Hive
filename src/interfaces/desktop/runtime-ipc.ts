@@ -1,4 +1,5 @@
 import { ActorContext, ResultEnvelope } from '../../contracts.js'
+import { HiveError } from '../../errors.js'
 import {
   RuntimeBrowseOperation,
   RuntimeBrowseRequest,
@@ -12,27 +13,18 @@ import {
   runtimeControlOperations,
 } from '../../runtime/runtime-controller.js'
 import { RunManager } from '../../runtime/run-manager.js'
-import { Unsubscribe } from '../../runtime/runtime-adapter.js'
-
-export const runtimeIpcPrefix = 'hive:runtime:'
-export const runtimeStreamChannels = {
-  data: `${runtimeIpcPrefix}stream:data`,
-  exit: `${runtimeIpcPrefix}stream:exit`,
-  events: `${runtimeIpcPrefix}stream:events`,
-} as const
-
-/** The shapes Electron provides, declared structurally so this module needs no Electron dependency. */
-export type RuntimeIpcHandler = (event: unknown, payload: unknown) => ResultEnvelope<unknown> | Promise<ResultEnvelope<unknown>>
-
-export interface RuntimeIpcRegistrar {
-  handle(channel: string, handler: RuntimeIpcHandler): void
-}
-
-/** `webContents`, reduced to the one method a stream needs. */
-export interface WebContentsSender {
-  send(channel: string, payload: unknown): void
-  isDestroyed?(): boolean
-}
+import {
+  RuntimeIpcHandler,
+  RuntimeIpcRegistrar,
+  RuntimeStreamData,
+  WebContentsSender,
+  runtimeIpcPrefix,
+  runtimeStreamChannels,
+  runtimeStreamControlChannels,
+  toRequest,
+  type RuntimeBridge,
+  type Unsubscribe,
+} from './runtime-channels.js'
 
 export interface RuntimeIpcSurfaces {
   browser: RuntimeBrowser
@@ -71,22 +63,9 @@ export function registerRuntimeIpc(registrar: RuntimeIpcRegistrar, surfaces: Run
   return channels
 }
 
-/**
- * The contract a preload script exposes as `window.hive.runtime`.
- *
- * Written down here rather than in the preload so the renderer's view model can be
- * typed against it and tested with a plain object, and so the preload has an
- * explicit channel allowlist to check against instead of forwarding whatever
- * string the renderer passes.
- */
-export interface RuntimeBridge {
-  invoke(channel: string, payload?: unknown): Promise<ResultEnvelope<unknown>>
-  on(channel: string, listener: (payload: unknown) => void): Unsubscribe
-}
-
 export function runtimeBridgeChannels(includeControl = true): string[] {
   const operations = includeControl ? [...runtimeBrowseOperations, ...runtimeControlOperations] : [...runtimeBrowseOperations]
-  return [...operations.map((operation) => `${runtimeIpcPrefix}${operation}`), ...Object.values(runtimeStreamChannels)].sort()
+  return [...operations.map((operation) => `${runtimeIpcPrefix}${operation}`), ...Object.values(runtimeStreamChannels), ...Object.values(runtimeStreamControlChannels)].sort()
 }
 
 export interface RuntimeStreamOptions {
@@ -95,11 +74,6 @@ export interface RuntimeStreamOptions {
   actor: ActorContext
   /** Interval between event-cursor polls. Unreferenced, so it never holds the process open. */
   pollMs?: number
-}
-
-export interface RuntimeStreamData {
-  runId: string
-  chunk: string
 }
 
 /**
@@ -171,6 +145,40 @@ export class RuntimeStreamBridge {
     for (const runId of [...this.attached.keys()]) this.detach(runId)
   }
 
+  /**
+   * Registers the attach/detach/follow channels, so a renderer drives this bridge
+   * through the same registrar as every other channel rather than reaching the
+   * object directly. The payload supplies `runId` (attach/detach) and
+   * `afterSequence` (follow); everything else about the stream is the main
+   * process's decision, not the renderer's.
+   */
+  registerControl(registrar: RuntimeIpcRegistrar): string[] {
+    const channels: string[] = []
+    const register = (channel: string, handler: RuntimeIpcHandler) => {
+      registrar.handle(channel, handler)
+      channels.push(channel)
+    }
+    // The sender comes from the IPC event, never the payload: `event.sender` is
+    // the webContents Electron itself identified, so a renderer cannot point a
+    // stream at some other window or fabricate a destination.
+    register(runtimeStreamControlChannels.attach, (event, payload) => {
+      const runId = streamRunId(payload)
+      this.attach(runId, senderFrom(event))
+      return { version: 1, requestId: `attach:${runId}`, ok: true, data: { runId } }
+    })
+    register(runtimeStreamControlChannels.detach, (_event, payload) => {
+      const runId = streamRunId(payload)
+      this.detach(runId)
+      return { version: 1, requestId: `detach:${runId}`, ok: true, data: { runId } }
+    })
+    register(runtimeStreamControlChannels.follow, (event, payload) => {
+      const afterSequence = typeof (payload as { afterSequence?: unknown } | null)?.afterSequence === 'number' ? (payload as { afterSequence: number }).afterSequence : 0
+      this.follow(senderFrom(event), afterSequence)
+      return { version: 1, requestId: `follow:${afterSequence}`, ok: true, data: { afterSequence } }
+    })
+    return channels
+  }
+
   private send(sender: WebContentsSender, channel: string, payload: unknown): void {
     // A closed window is the normal end of a stream, not an error worth throwing over.
     if (sender.isDestroyed?.()) return
@@ -179,10 +187,25 @@ export class RuntimeStreamBridge {
 }
 
 /**
- * The operation comes from the channel, never from the payload, so a renderer
- * cannot reach a different operation by sending a different body.
+ * The one value a stream control channel needs from the payload. An empty or
+ * non-string run id is refused rather than defaulted: attaching to "run 0" would
+ * silently subscribe the renderer to nothing.
  */
-function toRequest<R extends { version: 1; operation: O }, O>(operation: O, payload: unknown): R {
-  const supplied = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : {}
-  return { ...supplied, version: 1, operation } as R
+function streamRunId(payload: unknown): string {
+  const runId = (payload as { runId?: unknown } | null)?.runId
+  if (typeof runId !== 'string' || runId === '') throw new HiveError('MISSING_ARGUMENT', 'runId is required for this operation')
+  return runId
+}
+
+/**
+ * The destination a stream pushes to, taken from the IPC event: `event.sender`
+ * is the webContents Electron identified as the caller. A test supplies a plain
+ * recorder shaped like it, which is the same shape the real event carries.
+ */
+function senderFrom(event: unknown): WebContentsSender {
+  const sender = (event as { sender?: unknown } | null)?.sender
+  if (typeof sender !== 'object' || sender === null || typeof (sender as WebContentsSender).send !== 'function') {
+    throw new HiveError('MISSING_ARGUMENT', 'sender is required for this operation')
+  }
+  return sender as WebContentsSender
 }

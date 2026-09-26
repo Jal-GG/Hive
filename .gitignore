@@ -1,8 +1,11 @@
 node_modules/
 dist/
+.native-abi/
 *.db
 *.db-shm
 *.db-wal
 coverage/
+release-manifest.json
 UNIFIED_PLAN.md
 .agents/
+docs/

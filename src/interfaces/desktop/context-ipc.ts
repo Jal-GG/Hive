@@ -5,8 +5,9 @@ import {
   ContextBrowser,
   contextBrowseOperations,
 } from '../../context/browser.js'
+import { contextIpcPrefix } from './runtime-channels.js'
 
-export const contextIpcPrefix = 'hive:context:'
+export { contextIpcPrefix }
 
 /** The shape `ipcMain.handle` expects, declared structurally so this module needs no Electron dependency. */
 export type IpcHandler = (event: unknown, payload: unknown) => ResultEnvelope<unknown>

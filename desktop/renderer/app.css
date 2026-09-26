@@ -1,0 +1,369 @@
+@import 'tailwindcss';
+
+/*
+ * Hive's look: a quiet, warm graphite instrument with one honey accent.
+ *
+ * The palette is deliberately narrow — neutrals carry almost everything, honey
+ * marks what matters (nectar, the primary action, the live brand), and status
+ * colors speak only for state. No glassmorphism, no glows: the premium feel
+ * comes from typography, spacing, and 1px borders.
+ */
+@theme {
+  --font-display: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Warm graphite neutrals, light-on-dark. */
+  --color-hive-950: #0c0c0f;
+  --color-hive-900: #111114;
+  --color-hive-850: #16161a;
+  --color-hive-800: #1c1c21;
+  --color-hive-700: #26262d;
+  --color-hive-600: #33333c;
+  --color-hive-500: #4b4b56;
+  --color-hive-400: #6d6d78;
+  --color-hive-300: #9c9ca7;
+  --color-hive-200: #c9c9d1;
+  --color-hive-100: #ececef;
+
+  /* The one accent: nectar gold. */
+  --color-honey-300: #ffd98e;
+  --color-honey-400: #f7c55c;
+  --color-honey-500: #eeb22f;
+  --color-honey-600: #c98f1d;
+  --color-honey-700: #8f6512;
+
+  /* Status speaks only for state. */
+  --color-meadow-400: #7fd6a4;
+  --color-meadow-500: #4cb87d;
+
+  --color-ember-400: #f19a9a;
+  --color-ember-500: #e26d6d;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-display);
+  color: var(--color-hive-100);
+  background-color: var(--color-hive-950);
+  /* One quiet honeycomb texture at the edge of perception: identity, not decoration. */
+  background-image:
+    radial-gradient(ellipse 70% 45% at 50% -20%, rgba(238, 178, 47, 0.045), transparent),
+    url("data:image/svg+xml,%3Csvg width='56' height='97' viewBox='0 0 56 97' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M28 0l24.25 14v28L28 56 3.75 42V14L28 0zM28 97l24.25-14V55L28 41 3.75 55v28L28 97z' fill='%2316161a' fill-opacity='0.5' fill-rule='evenodd'/%3E%3C/svg%3E");
+  overflow: hidden;
+}
+
+/* --- shared surfaces: flat panels, hairline borders --- */
+
+.panel {
+  background: var(--color-hive-900);
+  border: 1px solid var(--color-hive-700);
+}
+
+.panel-soft {
+  background: var(--color-hive-850);
+  border: 1px solid var(--color-hive-700);
+}
+
+/* Kept names, restyled: the old glass surfaces become flat panels so existing
+   markup reads the same while losing the blur and the translucency. */
+.glass {
+  background: var(--color-hive-900);
+  border: 1px solid var(--color-hive-700);
+  backdrop-filter: none;
+}
+
+.glass-soft {
+  background: var(--color-hive-850);
+  border: 1px solid var(--color-hive-700);
+  backdrop-filter: none;
+}
+
+.hex-chip {
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+}
+
+/* --- top bar: brand, tabs, KPI strip --- */
+
+.topbar {
+  height: 3.25rem;
+  background: var(--color-hive-900);
+  border-bottom: 1px solid var(--color-hive-700);
+}
+
+.tab-btn {
+  position: relative;
+  padding: 5px 12px;
+  border-radius: 7px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-hive-300);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.tab-btn:hover {
+  color: var(--color-hive-100);
+  background: var(--color-hive-800);
+}
+
+.tab-btn-active {
+  color: var(--color-honey-300);
+  background: color-mix(in oklab, var(--color-honey-500) 14%, transparent);
+}
+
+.kpi {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.kpi-value {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+/* Section labels: the small-caps mono headers that name each panel. */
+.section-label {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-hive-200);
+}
+
+/* --- comb heat map: one hexagon per work item --- */
+
+.heat-cell {
+  width: 20px;
+  height: 23px;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  background: var(--color-hive-700);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 100ms ease;
+}
+
+.heat-cell:hover {
+  transform: scale(1.25);
+}
+
+.heat-cell-open {
+  background: var(--color-hive-500);
+}
+
+.heat-cell-work {
+  background: var(--color-honey-500);
+}
+
+.heat-cell-review {
+  background: var(--color-honey-300);
+}
+
+.heat-cell-blocked {
+  background: var(--color-ember-500);
+}
+
+.heat-cell-done {
+  background: var(--color-hive-700);
+}
+
+/* The entrance pulse dot: the hive's mouth, alive when triggers admit. */
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--color-meadow-500);
+  animation: breathe 2s ease-in-out infinite;
+}
+
+.pulse-dot-paused {
+  background: var(--color-hive-500);
+  animation: none;
+}
+
+/* --- status language --- */
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  flex: none;
+}
+
+.status-dot-live {
+  background: var(--color-meadow-500);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+.status-dot-idle {
+  background: var(--color-honey-500);
+  animation: breathe 3.5s ease-in-out infinite;
+}
+
+.status-dot-done {
+  background: var(--color-hive-500);
+}
+
+.status-dot-gone {
+  background: var(--color-hive-700);
+}
+
+.status-dot-escalated {
+  background: var(--color-ember-500);
+  animation: breathe 1.2s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* --- nectar meters (agent energy) --- */
+
+.nectar-cell {
+  height: 6px;
+  flex: 1;
+  border-radius: 1px;
+  background: var(--color-hive-700);
+}
+
+.nectar-cell-full {
+  background: var(--color-honey-500);
+}
+
+/* --- inputs and buttons --- */
+
+.field {
+  background: var(--color-hive-950);
+  border: 1px solid var(--color-hive-700);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+
+.field:hover {
+  border-color: var(--color-hive-500);
+}
+
+.field:focus {
+  border-color: var(--color-honey-600);
+}
+
+.field::placeholder {
+  color: var(--color-hive-500);
+}
+
+select.field {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236d6d78' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 30px;
+}
+
+.btn {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.btn:active {
+  transform: translateY(0.5px);
+}
+
+.btn-honey {
+  background: var(--color-honey-500);
+  color: #241a05;
+  font-weight: 700;
+}
+
+.btn-honey:hover:not(:disabled) {
+  background: var(--color-honey-400);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--color-hive-700);
+  color: var(--color-hive-200);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--color-hive-500);
+  color: var(--color-hive-100);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* --- terminal --- */
+
+.terminal .xterm {
+  padding: 10px 12px;
+}
+
+.terminal .xterm-viewport {
+  background-color: transparent !important;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-hive-700);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-hive-500);
+}
+
+/* The hive floor (§7 Phase 8): a floor of desks, one per bee. A desk is a view
+   of fleet state the rail already shows; it holds no controls of its own. */
+.office-floor {
+  background-image:
+    radial-gradient(circle at 1px 1px, var(--color-hive-700) 1px, transparent 0);
+  background-size: 22px 22px;
+}
+
+.office-desk-empty {
+  border-style: dashed;
+  opacity: 0.55;
+}

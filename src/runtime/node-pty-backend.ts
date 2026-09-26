@@ -1,4 +1,6 @@
 import { constants } from 'node:os'
+import { existsSync } from 'node:fs'
+import { delimiter, isAbsolute, join } from 'node:path'
 import { RuntimeBackend, RuntimeCapability, RuntimeExit, RuntimeHeartbeat, RuntimeStatus } from '../contracts.js'
 import { HiveError } from '../errors.js'
 import { Clock, ClockOptions, resolveClock } from '../shared.js'
@@ -113,7 +115,8 @@ export class NodePtyRuntimeAdapter implements RuntimeAdapter {
       branch: request.identity.branch,
       runId: request.identity.runId,
     })
-    const child = pty.spawn(command.executable, command.args, {
+    const executable = this.platform === 'win32' ? resolveWindowsExecutable(command.executable, request.environment.PATH) : command.executable
+    const child = pty.spawn(executable, command.args, {
       name: this.terminalName,
       cols: request.cols,
       rows: request.rows,
@@ -286,4 +289,30 @@ export function signalName(signal: number): string {
     if (value === signal) return name
   }
   return `SIG${signal}`
+}
+
+const defaultPathExtensions = ['.exe', '.cmd', '.bat', '.com']
+
+/**
+ * node-pty spawns through CreateProcess, which — unlike `child_process` — does
+ * no PATH lookup of its own: a profile's bare executable name is only a file
+ * "not found" waiting to happen. Resolution therefore happens here, against the
+ * PATH the child itself will see, honouring PATHEXT the way the shell does.
+ *
+ * A name that resolves to nothing is returned unchanged, so the spawn fails with
+ * the PTY's own error rather than a second, competing not-found message.
+ */
+export function resolveWindowsExecutable(executable: string, pathValue: string | undefined): string {
+  if (executable.includes('\\') || executable.includes('/')) return executable
+  const directories = (pathValue ?? '').split(delimiter).filter((entry) => entry !== '')
+  // The name as given (an extensioned or extensionless file), then the name
+  // under each executable extension, in the order the shell would consider.
+  const candidates = [executable, ...defaultPathExtensions.map((extension) => `${executable}${extension}`)]
+  for (const directory of directories) {
+    for (const candidate of candidates) {
+      const resolved = join(directory, candidate)
+      if (isAbsolute(resolved) && existsSync(resolved)) return resolved
+    }
+  }
+  return executable
 }

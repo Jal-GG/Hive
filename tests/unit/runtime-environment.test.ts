@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { EnvironmentPolicy, RuntimeIdentity } from '../../src/contracts.js'
-import { baseEnvironmentAllowList, resolveEnvironment, runtimeIdentityEnvironment } from '../../src/runtime/environment.js'
+import { baseEnvironmentAllowList, credentialPresence, resolveEnvironment, runtimeIdentityEnvironment } from '../../src/runtime/environment.js'
 import { redactArguments, redactEnvironment, redactText, redactedValue } from '../../src/runtime/redaction.js'
 
 const identity: RuntimeIdentity = {
@@ -106,6 +106,40 @@ describe('resolveEnvironment', () => {
     const environment = runtimeIdentityEnvironment({ ...identity, agentId: undefined, workItemId: undefined })
     expect('HIVE_AGENT_ID' in environment).toBe(false)
     expect('HIVE_WORK_ITEM_ID' in environment).toBe(false)
+  })
+})
+
+describe('credentialPresence', () => {
+  it('reports named credentials the host carries, without values', () => {
+    const presence = credentialPresence(
+      policy({ allow: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL'] }),
+      { ANTHROPIC_API_KEY: 'sk-live', anthropic_base_url: 'https://api' },
+    )
+    // Only secret-looking names count: a base URL is configuration, not a credential.
+    expect(presence.present).toEqual(['ANTHROPIC_API_KEY'])
+    expect(presence.missing).toEqual(['ANTHROPIC_AUTH_TOKEN'])
+  })
+
+  it('matches host names case-insensitively, because Windows does', () => {
+    const presence = credentialPresence(policy({ allow: ['OPENAI_API_KEY'] }), { openai_api_key: 'sk-x' })
+    expect(presence.present).toEqual(['OPENAI_API_KEY'])
+    expect(presence.missing).toEqual([])
+  })
+
+  it('skips wildcards and non-secrets, and treats an empty value as missing', () => {
+    const presence = credentialPresence(
+      policy({ allow: ['CLAUDE_CODE_*', 'PATH', 'GITHUB_TOKEN', 'XAI_API_KEY'] }),
+      { PATH: '/bin', GITHUB_TOKEN: '' },
+    )
+    expect(presence.present).toEqual([])
+    expect(presence.missing).toEqual(['GITHUB_TOKEN', 'XAI_API_KEY'])
+  })
+
+  it('reads the live host environment when none is injected', () => {
+    // The function's contract is names-only; the real env only decides which side of
+    // the list a name lands on, so the assertion is shape, not contents.
+    const presence = credentialPresence(policy({ allow: ['ANTHROPIC_API_KEY'] }))
+    expect(presence.present.concat(presence.missing)).toEqual(['ANTHROPIC_API_KEY'])
   })
 })
 

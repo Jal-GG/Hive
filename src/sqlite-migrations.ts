@@ -1,4 +1,4 @@
-export const schemaVersion = 7
+export const schemaVersion = 20
 
 export const migrations: Record<number, string> = {
   1: `
@@ -151,6 +151,318 @@ export const migrations: Record<number, string> = {
       energy INTEGER NOT NULL,
       max_energy INTEGER NOT NULL,
       created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `,
+  8: `
+    -- Phase 6: what was ingested, from where, and how it was parsed. The FTS
+    -- table is the lexical index; sources are the change-detection truth, so
+    -- the index can be wiped and rebuilt from them at any time (C12).
+    CREATE TABLE IF NOT EXISTS ingest_sources (
+      uri TEXT PRIMARY KEY,
+      path TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      mtime_ms INTEGER NOT NULL,
+      parser TEXT NOT NULL,
+      chunk_count INTEGER NOT NULL,
+      ingested_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ingest_sources_scope_idx ON ingest_sources(workspace_id, project_id);
+    CREATE VIRTUAL TABLE IF NOT EXISTS ingest_chunks USING fts5(
+      uri UNINDEXED,
+      chunk_id UNINDEXED,
+      tier UNINDEXED,
+      title,
+      body,
+      tokenize = 'porter unicode61'
+    );
+    -- One session per run: the durable record of who worked on what, for how
+    -- long, and the deterministic summary that makes it searchable.
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      run_id TEXT,
+      agent_id TEXT,
+      work_item_id TEXT,
+      runtime_profile TEXT,
+      branch TEXT,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      exit_code INTEGER,
+      exit_signal TEXT,
+      summary TEXT,
+      overview TEXT,
+      captured_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS sessions_scope_idx ON sessions(workspace_id, project_id, started_at);
+  `,
+  9: `
+    -- Phase 7: the verified merge queue. Terminal states are immutable — a
+    -- landed request is a record of what shipped, not a row to be edited.
+    CREATE TABLE IF NOT EXISTS merge_requests (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      work_item_id TEXT,
+      run_id TEXT,
+      source_branch TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      target_sha TEXT NOT NULL,
+      batch_id TEXT,
+      state TEXT NOT NULL,
+      failure_kind TEXT,
+      failure_detail TEXT,
+      conflict_files TEXT,
+      gate_results TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      closed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS merge_requests_state_idx ON merge_requests(workspace_id, project_id, state, created_at);
+    CREATE TABLE IF NOT EXISTS merge_batches (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      target_sha TEXT NOT NULL,
+      merge_request_ids TEXT NOT NULL,
+      state TEXT NOT NULL,
+      isolation_of TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    -- A convoy is the WorkItem grouping that must land together; closure is a
+    -- guarded transition so it happens exactly once no matter who scans.
+    CREATE TABLE IF NOT EXISTS convoys (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      closed_by TEXT,
+      closed_at TEXT,
+      created_at TEXT NOT NULL
+    );
+  `,
+  10: `
+    -- Phase 7 exit gate: a protected target is approval-gated. The request is
+    -- held in 'awaiting_approval' before any integration happens, so nothing is
+    -- merged, gated, or pushed toward a protected branch until an approver
+    -- releases it — and who released it stays on the record.
+    ALTER TABLE merge_requests ADD COLUMN protected_target INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE merge_requests ADD COLUMN approved_by TEXT;
+    ALTER TABLE merge_requests ADD COLUMN approved_at TEXT;
+  `,
+  11: `
+    -- Phase 7 §6.3: the rest of the MergeRequest schema. What was asked for
+    -- (source_commit), what actually shipped (merge_commit), and the claim that
+    -- authorized the work (claimant + fencing token), so a merge is auditable
+    -- end to end rather than only by its final state.
+    ALTER TABLE merge_requests ADD COLUMN source_commit TEXT;
+    ALTER TABLE merge_requests ADD COLUMN merge_commit TEXT;
+    ALTER TABLE merge_requests ADD COLUMN claimed_by TEXT;
+    ALTER TABLE merge_requests ADD COLUMN fencing_token INTEGER;
+    ALTER TABLE merge_requests ADD COLUMN claim_expires_at TEXT;
+  `,
+  12: `
+    -- The original table-level UNIQUE(resource_type, resource_id, state) meant a
+    -- resource could hold only ONE released lease for all time, so anything
+    -- leased more than once collided the second time it was released. A run is
+    -- leased once (its id is the resource), so nothing noticed; a merge target is
+    -- leased every pass, and the failed release left the lease active forever.
+    -- The invariant actually wanted is one ACTIVE lease per resource, which is a
+    -- partial index — and history stays queryable.
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE leases_rebuilt (
+      id TEXT PRIMARY KEY,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL REFERENCES actors(id),
+      fencing_token INTEGER NOT NULL,
+      acquired_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      state TEXT NOT NULL
+    );
+    INSERT INTO leases_rebuilt (id, resource_type, resource_id, owner_actor_id, fencing_token, acquired_at, expires_at, state)
+      SELECT id, resource_type, resource_id, owner_actor_id, fencing_token, acquired_at, expires_at, state FROM leases;
+    DROP TABLE leases;
+    ALTER TABLE leases_rebuilt RENAME TO leases;
+    CREATE UNIQUE INDEX leases_active_idx ON leases(resource_type, resource_id) WHERE state = 'active';
+    CREATE INDEX leases_history_idx ON leases(resource_type, resource_id, fencing_token);
+    PRAGMA foreign_keys = ON;
+  `,
+  13: `
+    -- Phase 8: the skill registry. The files on disk under the registry root are
+    -- the content; this table is the index that makes them discoverable,
+    -- versioned, and installable/uninstallable as a unit.
+    CREATE TABLE IF NOT EXISTS skills (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      version TEXT NOT NULL,
+      description TEXT NOT NULL,
+      tags TEXT NOT NULL,
+      body TEXT NOT NULL,
+      state TEXT NOT NULL,
+      path TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      source TEXT NOT NULL,
+      installed_by TEXT NOT NULL,
+      installed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, project_id, id)
+    );
+    CREATE INDEX IF NOT EXISTS skills_scope_idx ON skills(workspace_id, project_id, state);
+  `,
+  14: `
+    -- Phase 8: declarative workflow definitions, runs, and idempotent trigger history.
+    CREATE TABLE IF NOT EXISTS workflow_definitions (
+      id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      steps TEXT NOT NULL,
+      enabled INTEGER NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (id, version)
+    );
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      workflow_id TEXT NOT NULL,
+      workflow_version TEXT NOT NULL,
+      trigger_id TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL,
+      work_item_ids TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      cancelled_at TEXT,
+      completed_at TEXT,
+      FOREIGN KEY (workflow_id, workflow_version) REFERENCES workflow_definitions(id, version)
+    );
+    CREATE INDEX IF NOT EXISTS workflow_runs_scope_idx ON workflow_runs(workspace_id, project_id, state, created_at);
+    CREATE TABLE IF NOT EXISTS trigger_history (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      kind TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      state TEXT NOT NULL,
+      workflow_run_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS trigger_history_scope_idx ON trigger_history(workspace_id, project_id, created_at);
+  `,
+  15: `
+    -- Phase 8: opt-in, low-cardinality observability measurements.
+    CREATE TABLE IF NOT EXISTS observation_metrics (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      kind TEXT NOT NULL,
+      name TEXT NOT NULL,
+      value REAL NOT NULL,
+      unit TEXT NOT NULL,
+      labels TEXT NOT NULL,
+      recorded_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS observation_metrics_scope_idx ON observation_metrics(workspace_id, project_id, kind, recorded_at);
+  `,
+  16: `
+    CREATE TABLE IF NOT EXISTS workflow_schedules (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      workflow_id TEXT NOT NULL,
+      interval_ms INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      next_run_at TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS workflow_schedules_due_idx ON workflow_schedules(state, next_run_at);
+    CREATE INDEX IF NOT EXISTS workflow_schedules_scope_idx ON workflow_schedules(workspace_id, project_id, state);
+  `,
+  17: `
+    -- Phase 8: durable control-plane settings. An operator's trigger-ingress
+    -- policy lives here rather than in process memory so a pause issued from a
+    -- one-shot CLI invocation reaches the long-running desktop that admits.
+    CREATE TABLE IF NOT EXISTS control_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `,
+  18: `
+    -- Phase 8: context watches. A watch observes a canonical URI prefix and
+    -- enqueues its workflow when the content fingerprint moves. The fingerprint
+    -- is stored, not the content: a watch row is an observation trigger, not a
+    -- copy of what it watched.
+    CREATE TABLE IF NOT EXISTS workflow_watches (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      workflow_id TEXT NOT NULL,
+      uri_prefix TEXT NOT NULL,
+      state TEXT NOT NULL,
+      last_observed TEXT,
+      next_run_at TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS workflow_watches_due_idx ON workflow_watches(state, next_run_at);
+    CREATE INDEX IF NOT EXISTS workflow_watches_scope_idx ON workflow_watches(workspace_id, project_id, state);
+    -- Phase 8: retrieval trajectories, the observability record of what
+    -- retrieval was asked and what it returned. Opt-in with telemetry: the
+    -- trajectory is a metric, and recording it is a telemetry decision.
+    CREATE TABLE IF NOT EXISTS retrieval_trajectories (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      query TEXT NOT NULL,
+      tiers TEXT NOT NULL,
+      hit_count INTEGER NOT NULL,
+      top_hit_uri TEXT,
+      duration_ms INTEGER NOT NULL,
+      occurred_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS retrieval_trajectories_scope_idx ON retrieval_trajectories(workspace_id, project_id, occurred_at);
+  `,
+  19: `
+    -- Phase 9: federation quarantine. Imported peer events land here first,
+    -- reviewed evidence rather than adopted state (§7 Phase 9). Promotion out
+    -- of quarantine is an explicit operator decision, never automatic.
+    CREATE TABLE IF NOT EXISTS federation_quarantine (
+      id TEXT PRIMARY KEY,
+      peer_id TEXT NOT NULL,
+      event_json TEXT NOT NULL,
+      received_at TEXT NOT NULL,
+      state TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS federation_quarantine_peer_idx ON federation_quarantine(peer_id, state, received_at);
+  `,
+  20: `
+    -- Phase 9: federation replay state. One row per peer: the last page
+    -- sequence imported (the replay cursor), the page checksum (idempotent
+    -- re-import of the same page is a no-op, not a duplicate quarantine), and
+    -- the peer manifest checksum (a peer whose manifest changes mid-stream is
+    -- a different contract, not a continuation of the same one).
+    CREATE TABLE IF NOT EXISTS federation_replay_state (
+      peer_id TEXT PRIMARY KEY,
+      last_sequence INTEGER NOT NULL,
+      last_page_checksum TEXT NOT NULL,
+      manifest_checksum TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
   `,

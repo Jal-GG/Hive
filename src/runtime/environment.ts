@@ -55,6 +55,34 @@ export function resolveEnvironment(input: ResolveEnvironmentInput): Record<strin
   return { ...environment, ...runtimeIdentityEnvironment(identity) }
 }
 
+export interface CredentialPresence {
+  present: string[]
+  missing: string[]
+}
+
+/**
+ * Which of a profile's named credentials the host environment actually carries.
+ *
+ * Names only, never values: this is what a launcher shows an operator before a
+ * launch — "ANTHROPIC_API_KEY is set" — and the value itself stays in this
+ * process. Wildcard entries are skipped because a family of variables cannot be
+ * reported present or missing as one thing, and non-secret names are skipped
+ * because a base URL being set is not a credential state.
+ */
+export function credentialPresence(policy: EnvironmentPolicy, host?: Record<string, string | undefined>): CredentialPresence {
+  const lookup = new Map<string, string | undefined>()
+  for (const [name, value] of Object.entries(host ?? {})) lookup.set(lower(name), value)
+  const present: string[] = []
+  const missing: string[] = []
+  for (const entry of policy.allow) {
+    if (entry.includes('*') || !isSecretName(entry)) continue
+    const value = lookup.get(lower(entry))
+    if (value !== undefined && value !== '') present.push(entry)
+    else missing.push(entry)
+  }
+  return { present: present.sort(), missing: missing.sort() }
+}
+
 /** C16: identity is handed over explicitly, never inferred from the working directory. */
 export function runtimeIdentityEnvironment(identity: RuntimeIdentity): Record<string, string> {
   const environment: Record<string, string> = {

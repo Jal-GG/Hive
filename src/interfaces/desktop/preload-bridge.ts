@@ -2,6 +2,12 @@ import { ResultEnvelope } from '../../contracts.js'
 import {
   contextBrowseOperationNames,
   contextIpcPrefix,
+  controlBrowseOperationNames,
+  controlControlOperationNames,
+  controlIpcPrefix,
+  mergeBrowseOperationNames,
+  mergeControlOperationNames,
+  mergeIpcPrefix,
   runtimeBrowseOperationNames,
   runtimeControlOperationNames,
   RuntimeBridge,
@@ -29,6 +35,10 @@ export interface HiveWindow {
   context: PreloadBridge
   /** The task board, mail, handoffs, and packet compilation (§6.2, §6.5). */
   work: PreloadBridge
+  /** The merge queue, branch graph, gate output, conflicts, and recovery (§7 Phase 7). */
+  merge: PreloadBridge
+  /** Workflows, triggers, schedules, skills, and telemetry (§7 Phase 8). */
+  control: PreloadBridge
   /** Stream control: attach a terminal, follow the event log. */
   stream: {
     attach(runId: string): Promise<ResultEnvelope<unknown>>
@@ -109,6 +119,8 @@ export function createHiveWindow(ipc: IpcRendererLike): HiveWindow {
     runtime: runtimeBridge,
     context: invokeOnly(contextIpcPrefix),
     work: invokeOnly(workIpcPrefix),
+    merge: invokeOnly(mergeIpcPrefix),
+    control: invokeOnly(controlIpcPrefix),
     stream: {
       attach: (runId) => streamInvoke(runtimeStreamControlChannels.attach, { runId }),
       detach: (runId) => streamInvoke(runtimeStreamControlChannels.detach, { runId }),
@@ -134,6 +146,10 @@ export function allowedChannels(): string[] {
     ...contextBrowseOperationNames.map((operation) => `${contextIpcPrefix}${operation}`),
     ...workBrowseOperationNames.map((operation) => `${workIpcPrefix}${operation}`),
     ...workControlOperationNames.map((operation) => `${workIpcPrefix}${operation}`),
+    ...mergeBrowseOperationNames.map((operation) => `${mergeIpcPrefix}${operation}`),
+    ...mergeControlOperationNames.map((operation) => `${mergeIpcPrefix}${operation}`),
+    ...controlBrowseOperationNames.map((operation) => `${controlIpcPrefix}${operation}`),
+    ...controlControlOperationNames.map((operation) => `${controlIpcPrefix}${operation}`),
     ...Object.values(runtimeStreamControlChannels),
   ].sort()
 }

@@ -1,15 +1,22 @@
 import { Run, RunState, RuntimeStatus } from '../../contracts.js'
-import { RuntimeBridge, RuntimeStreamData, runtimeIpcPrefix, runtimeStreamChannels, type Unsubscribe } from './runtime-channels.js'
+import { RuntimeBridge, RuntimeStreamData, runtimeStreamChannels, type Unsubscribe } from './runtime-channels.js'
 
 /** Same bound as a session's scrollback: a terminal view keeps a tail, not a history. */
 const defaultBufferBytes = 256 * 1024
+
+/** The event log is a pulse, not a ledger view: a screenful is all an operator reads. */
+const eventTailLength = 40
 
 export interface ProfileView {
   id: string
   provider: string
   backend: string
   available: boolean
+  /** Whether the executable resolves on this machine's PATH. */
+  onPath?: boolean
   promptDelivery: string
+  /** Which named credentials the host carries, as names only — never values. */
+  credentials?: { present: string[]; missing: string[] }
 }
 
 export interface RosterRow {
@@ -24,6 +31,15 @@ export interface RosterRow {
   live: boolean
 }
 
+/** One line of the event log the header and sidebar render: what, who, when. */
+export interface EventLogEntry {
+  sequence?: number
+  eventType: string
+  source: string
+  runId?: string
+  occurredAt: string
+}
+
 export interface RuntimeViewState {
   profiles: ProfileView[]
   runs: Run[]
@@ -33,6 +49,8 @@ export interface RuntimeViewState {
   status?: RuntimeStatus
   /** Last event sequence the view has seen, so a reconnect resumes rather than restarts. */
   cursor: number
+  /** A short tail of ledger events, newest first — the operator's pulse of the hive. */
+  events: EventLogEntry[]
   busy: boolean
   error?: string
 }
@@ -68,7 +86,7 @@ export class RuntimeViewModel {
   private readonly bufferBytes: number
   private readonly listeners = new Set<(state: RuntimeViewState) => void>()
   private readonly subscriptions: Unsubscribe[] = []
-  private current: RuntimeViewState = { profiles: [], runs: [], roster: [], terminal: '', cursor: 0, busy: false }
+  private current: RuntimeViewState = { profiles: [], runs: [], roster: [], terminal: '', cursor: 0, events: [], busy: false }
 
   constructor(options: RuntimeViewModelOptions) {
     this.bridge = options.bridge
@@ -159,16 +177,25 @@ export class RuntimeViewModel {
   }
 
   private onEvents(payload: unknown): void {
-    const page = payload as { cursor?: number } | null
+    const page = payload as { events?: EventLogEntry[]; cursor?: number } | null
     const cursor = typeof page?.cursor === 'number' ? page.cursor : this.current.cursor
     // Never move the cursor backwards: an out-of-order page would otherwise make the
     // view re-request events it has already applied.
-    this.update({ cursor: Math.max(cursor, this.current.cursor) })
+    const entries = Array.isArray(page?.events) ? page.events : []
+    if (entries.length > 0) {
+      const tail = [...entries.reverse().map(toEntry), ...this.current.events].slice(0, eventTailLength)
+      this.update({ events: tail, cursor: Math.max(cursor, this.current.cursor) })
+    } else {
+      this.update({ cursor: Math.max(cursor, this.current.cursor) })
+    }
     void this.refresh()
   }
 
   private async read(operation: string, payload: Record<string, unknown> = {}): Promise<unknown> {
-    const result = await this.bridge.invoke(`${runtimeIpcPrefix}${operation}`, payload)
+    // The operation, not the channel: the preload owns the prefix and refuses
+    // anything it does not allowlist. Passing a prefixed name here produced
+    // `hive:runtime:hive:runtime:<op>` and an UNKNOWN_CHANNEL for every read.
+    const result = await this.bridge.invoke(operation, payload)
     if (!result.ok) {
       this.update({ error: `${result.error.code}: ${result.error.message}` })
       return undefined
@@ -223,4 +250,16 @@ export function outcomeOf(run: Run): string | undefined {
   if (run.exitSignal) return `signal ${run.exitSignal}`
   if (run.exitCode !== undefined) return `exit ${run.exitCode}`
   return run.endedAt ? 'ended' : undefined
+}
+
+/** Narrows a ledger envelope to the fields an operator reads; anything else stays behind. */
+function toEntry(envelope: unknown): EventLogEntry {
+  const event = (envelope ?? {}) as Partial<EventLogEntry>
+  return {
+    sequence: typeof event.sequence === 'number' ? event.sequence : undefined,
+    eventType: String(event.eventType ?? 'event'),
+    source: String(event.source ?? ''),
+    runId: typeof event.runId === 'string' ? event.runId : undefined,
+    occurredAt: String(event.occurredAt ?? ''),
+  }
 }

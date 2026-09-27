@@ -20,7 +20,8 @@ import { assertCapability } from '../capabilities.js'
 import { Ledger } from '../ledger.js'
 import { Clock, ClockOptions, resolveClock } from '../shared.js'
 import { createId } from '../shared.js'
-import { resolveEnvironment } from './environment.js'
+import { credentialPresence, resolveEnvironment, type CredentialPresence } from './environment.js'
+import { commandExists } from './executable.js'
 import { ProviderCatalog } from './provider-catalog.js'
 import { redactArguments, redactEnvironment } from './redaction.js'
 import { KillOptions, RuntimeAdapter, RuntimeSession, TranscriptAdapter, Unsubscribe } from './runtime-adapter.js'
@@ -178,7 +179,7 @@ export class RunManager {
       branch: worktree.branch,
       originMarker: runtimeOriginMarker,
     }
-    const environment = resolveEnvironment({ policy: profile.environmentPolicy, identity, host: this.host })
+    const environment = resolveEnvironment({ policy: profile.environmentPolicy, identity, host: this.mergedHostEnv() })
     const cols = request.cols ?? this.cols
     const rows = request.rows ?? this.rows
 
@@ -258,6 +259,35 @@ export class RunManager {
   write(actor: ActorContext, runId: string, data: string): void {
     assertCapability(actor.capabilities, 'runtime:control')
     this.liveSession(runId).session.write(data)
+  }
+
+  /**
+   * Which of a profile's named credentials the host environment carries, as names
+   * only. Answered from the host env this manager was given, so a launcher's
+   * "key present" badge and the launch itself can never disagree.
+   */
+  credentialPresence(profileId: string): CredentialPresence {
+    return credentialPresence(this.catalog.get(profileId).environmentPolicy, this.mergedHostEnv())
+  }
+
+  private mergedHostEnv(): Record<string, string | undefined> {
+    const merged = { ...this.host }
+    const dbSettings = this.ledger.settingsWithPrefix('env:')
+    for (const [key, value] of Object.entries(dbSettings)) {
+      merged[key.substring(4)] = value
+    }
+    return merged
+  }
+
+  /**
+   * Whether the profile's executable resolves against the PATH this manager
+   * inherits from. The fake backend simulates its process rather than spawning
+   * one, so for it there is no executable to find and the answer is yes.
+   */
+  executableOnPath(profileId: string): boolean {
+    const profile = this.catalog.get(profileId)
+    if (profile.backend === 'fake') return true
+    return commandExists(profile.executable, this.host)
   }
 
   resize(actor: ActorContext, runId: string, cols: number, rows: number): void {

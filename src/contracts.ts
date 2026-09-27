@@ -7,10 +7,16 @@ export type Capability =
   | 'work:mutate'
   | 'runtime:control'
   | 'merge:execute'
+  /** Releasing a merge onto a protected branch. Separate from `merge:execute` so an agent
+   *  that may queue and run the queue still cannot approve its own way onto a protected target. */
+  | 'merge:approve'
   | 'context:read'
   | 'context:write'
   | 'event:ingest'
   | 'backup:create'
+  /** Reviewing federation imports and deciding quarantined peer records. Separate from `context:read`
+   *  so a viewer can watch federation evidence without being able to adopt or reject it. */
+  | 'federation:review'
   /** Observing the roster, run state, and transcripts. Deliberately separate from `runtime:control`
    *  so a read-only viewer can watch a fleet it cannot start, steer, or stop. */
   | 'runtime:read'
@@ -680,4 +686,358 @@ export interface FleetDigest {
   inFlightTasks: number
   completedTasks: number
   escalations: number
+}
+
+// --- Ingestion, lexical search, and sessions (§7 Phase 6, C12) ---
+
+/** One ingested file: the change-detection record behind the lexical index. */
+export interface IngestSource {
+  uri: string
+  path: string
+  scope: ScopeRef
+  sha256: string
+  sizeBytes: number
+  mtimeMs: number
+  /** Which parser produced the chunks — provenance survives the index (C12). */
+  parser: string
+  chunkCount: number
+  ingestedAt: string
+}
+
+/** What one ingestion pass found and did. */
+export interface IngestReport {
+  added: number
+  updated: number
+  unchanged: number
+  removed: number
+  chunks: number
+}
+
+/** A parsed, searchable piece of a source at a fixed tier. */
+export interface IngestChunk {
+  uri: string
+  chunkId: string
+  tier: ContextLevel
+  title: string
+  body: string
+}
+
+/** One lexical search result, after fusion. */
+export interface SearchHit {
+  uri: string
+  chunkId: string
+  tier: ContextLevel
+  title: string
+  snippet: string
+  /** Fused RRF score; higher is better. Comparable within one query only. */
+  score: number
+}
+
+/** The durable record of one agent session: a run, distilled. */
+export interface SessionRecord {
+  id: string
+  scope: ScopeRef
+  runId?: string
+  agentId?: string
+  workItemId?: string
+  runtimeProfile: string
+  branch: string
+  startedAt: string
+  endedAt?: string
+  exitCode?: number
+  exitSignal?: string
+  /** L0: one line, what this session was. */
+  summary?: string
+  /** L1: a paragraph, what happened and how it ended. */
+  overview?: string
+  capturedAt?: string
+}
+
+// --- Verified merge queue and convoys (§7 Phase 7, C10, C15, C19, C22) ---
+
+export type MergeRequestState =
+  | 'open'
+  /** Queued against a protected target: held before any integration until an approver releases it. */
+  | 'awaiting_approval'
+  | 'preparing'
+  | 'gated'
+  | 'landing'
+  | 'landed'
+  | 'failed'
+  | 'conflicted'
+
+/** States a merge request never leaves: the record of what shipped, or why it did not. */
+export const terminalMergeRequestStates: readonly MergeRequestState[] = ['landed', 'failed', 'conflicted']
+
+/** Every way a merge attempt can die, named — classification drives the reaction (§7 Phase 7). */
+export type MergeFailureKind = 'conflict' | 'gate_failure' | 'infrastructure' | 'push_failure' | 'target_moved'
+
+export interface MergeGateResult {
+  gate: string
+  passed: boolean
+  /** Bounded but inspectable: enough to diagnose, never enough to drown the ledger. */
+  output: string
+}
+
+export interface MergeRequest {
+  id: string
+  scope: ScopeRef
+  workItemId?: string
+  runId?: string
+  sourceBranch: string
+  targetBranch: string
+  /** The source head this request was queued at — what was actually asked for. */
+  sourceCommit?: string
+  /** The target head this request was prepared against; movement invalidates preparation. */
+  targetSha: string
+  /** The commit that landed on the target, recorded only after the push succeeded (§5.5). */
+  mergeCommit?: string
+  batchId?: string
+  /** The actor that claimed this request under a merge lease, and the token it fenced with (C19). */
+  claimedBy?: string
+  fencingToken?: number
+  claimExpiresAt?: string
+  state: MergeRequestState
+  failureKind?: MergeFailureKind
+  failureDetail?: string
+  /** Conflicting paths, captured before the merge is aborted. */
+  conflictFiles?: string[]
+  gateResults?: MergeGateResult[]
+  /** True when the target was protected at enqueue time, so the hold is part of the record. */
+  protectedTarget?: boolean
+  /** Who released this request onto a protected target, and when. */
+  approvedBy?: string
+  approvedAt?: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+  closedAt?: string
+}
+
+export type MergeBatchState = 'pending' | 'integrating' | 'landed' | 'isolated'
+
+/** A batch is the queue's atomic unit: it lands together or it bisects (§7 Phase 7). */
+export interface MergeBatch {
+  id: string
+  scope: ScopeRef
+  targetBranch: string
+  targetSha: string
+  mergeRequestIds: string[]
+  state: MergeBatchState
+  /** When bisecting, the batch this one is narrowing down. */
+  isolationOf?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type ConvoyState = 'active' | 'closed' | 'forced'
+
+/**
+ * A convoy is a group of work items that must land together. Closure is a
+ * guarded transition — it happens exactly once, no matter how many scanners
+ * race to be the one that noticed.
+ */
+export interface ConvoyRecord {
+  id: string
+  scope: ScopeRef
+  state: ConvoyState
+  closedBy?: string
+  closedAt?: string
+  createdAt: string
+}
+
+/** What one convoy scan found and did. */
+export interface ConvoyScanReport {
+  scanned: number
+  /** Convoys closed by this scan (a convoy closed by a concurrent scan counts zero here). */
+  closed: number
+  /** Items dispatched because their convoy unblocked them. */
+  dispatched: number
+  /** Items blocked behind work that can no longer proceed. */
+  stranded: number
+}
+
+// --- Skills (§7 Phase 8) ---
+
+export type SkillState = 'installed' | 'disabled'
+
+/**
+ * What a skill declares about itself: the installable unit, before it has a
+ * home. `id` doubles as the directory name, so it is validated to a strict
+ * charset — a skill can never name a path it should not occupy.
+ */
+export interface SkillManifest {
+  id: string
+  name: string
+  version: string
+  description: string
+  /** Match tags; a task that needs one of these gets the skill in its packet. */
+  tags: string[]
+  /** The instructions handed to an agent that receives this skill. */
+  body: string
+}
+
+/** An installed skill: its manifest, where it landed, and who put it there. */
+export interface SkillRecord extends SkillManifest {
+  scope: ScopeRef
+  state: SkillState
+  /** Path to the skill's directory, always inside the registry root. */
+  path: string
+  sha256: string
+  /** Where it came from: a directory scan, an operator, an integration. */
+  source: string
+  installedBy: string
+  installedAt: string
+  updatedAt: string
+}
+
+/** What one discovery pass found on disk, and why it rejected what it rejected. */
+export interface SkillDiscoveryReport {
+  found: SkillManifest[]
+  rejected: { path: string; reason: string }[]
+}
+
+// --- Declarative workflows and trigger history (§7 Phase 8, C20) ---
+
+export type WorkflowRunState = 'queued' | 'running' | 'cancelled' | 'completed' | 'failed'
+
+export interface WorkflowStep {
+  id: string
+  type: 'create_work'
+  title: string
+  description?: string
+  priority?: number
+  issueType?: IssueType
+  requiredSkills?: string[]
+}
+
+export interface WorkflowDefinition {
+  id: string
+  version: string
+  name: string
+  description: string
+  steps: WorkflowStep[]
+  enabled: boolean
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkflowRun {
+  id: string
+  scope: ScopeRef
+  workflowId: string
+  workflowVersion: string
+  triggerId: string
+  state: WorkflowRunState
+  workItemIds: string[]
+  createdAt: string
+  updatedAt: string
+  cancelledAt?: string
+  completedAt?: string
+}
+
+export interface TriggerRecord {
+  id: string
+  scope: ScopeRef
+  kind: 'manual' | 'webhook' | 'github' | 'slack' | 'feed' | 'schedule' | 'watch'
+  workflowId: string
+  payload: Record<string, unknown>
+  state: 'accepted' | 'duplicate' | 'rejected'
+  workflowRunId?: string
+  createdAt: string
+}
+
+export type ObservationMetricKind = 'provider_health' | 'usage' | 'queue' | 'retrieval'
+
+export interface ObservationMetric {
+  id: string
+  scope: ScopeRef
+  kind: ObservationMetricKind
+  name: string
+  value: number
+  unit: string
+  labels: Record<string, string>
+  recordedAt: string
+}
+
+export type WorkflowScheduleState = 'enabled' | 'disabled'
+
+export interface WorkflowSchedule {
+  id: string
+  scope: ScopeRef
+  workflowId: string
+  intervalMs: number
+  state: WorkflowScheduleState
+  nextRunAt: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * A context watch (§7 Phase 8 "watches"): a URI prefix observed for change, so
+ * external edits to the canonical context become trigger input rather than
+ * something an operator must notice. The `uriPrefix` is canonicalized at
+ * registration; `lastObserved` is the content fingerprint at the last pass.
+ */
+export interface WorkflowWatch {
+  id: string
+  scope: ScopeRef
+  workflowId: string
+  /** Canonical `viking://` prefix watched, scope-inclusive. */
+  uriPrefix: string
+  state: WorkflowScheduleState
+  /** Content fingerprint at the last observation; change means due. */
+  lastObserved?: string
+  nextRunAt: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * Queue diagnostics (§7 Phase 8 "queue diagnostics"): one row per durable
+ * queue, from the ledger state the queues themselves are built on.
+ */
+export interface QueueDiagnostic {
+  queue: string
+  depth: number
+  oldestAt?: string
+  states: Record<string, number>
+}
+
+/** The read-only status snapshot a dashboard, SDK, or operator asks for. */
+export interface HiveStatusSnapshot {
+  version: string
+  scope: { workspace: string; project: string }
+  runs: { live: number; total: number }
+  work: { open: number; inFlight: number; total: number }
+  queues: QueueDiagnostic[]
+  triggerIngress: { paused: boolean; breakerFailures: number; recentAccepted: number }
+  telemetryEnabled: boolean
+}
+
+/** One recorded retrieval trajectory (§7 Phase 8 observability). */
+export interface RetrievalTrajectory {
+  id: string
+  scope: ScopeRef
+  query: string
+  tiers: string[]
+  hitCount: number
+  topHitUri?: string
+  durationMs: number
+  occurredAt: string
+}
+
+/** What one voice turn asked for, and how it was answered. */
+export type VoiceOutcome =
+  | { kind: 'answered'; operation: string; data: unknown }
+  | { kind: 'refused'; reason: string; detail: string }
+
+export interface VoiceTurnResult {
+  utterance: string
+  parsedOperation?: string
+  outcome: VoiceOutcome
+  occurredAt: string
 }

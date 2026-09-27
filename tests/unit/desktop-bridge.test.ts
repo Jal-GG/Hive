@@ -7,6 +7,10 @@ import { gitRepository, tempDirectory } from '../fixtures.js'
 import { allowedChannels, createHiveWindow, type IpcRendererLike } from '../../src/interfaces/desktop/preload-bridge.js'
 import { desktopOperator, startDesktopHost } from '../../src/interfaces/desktop/desktop-host.js'
 import { runtimeIpcPrefix, runtimeStreamChannels } from '../../src/interfaces/desktop/runtime-channels.js'
+import { RuntimeViewModel } from '../../src/interfaces/desktop/runtime-view-model.js'
+import { Ledger } from '../../src/ledger.js'
+import { WorkflowService } from '../../src/workflow.js'
+import { WorkBoard } from '../../src/work/board.js'
 
 function ok<T>(result: ResultEnvelope<T>): T {
   if (!result.ok) throw new Error(`expected success, got ${result.error.code}: ${result.error.message}`)
@@ -103,6 +107,34 @@ describe('desktop host assembly', () => {
 
     const profiles = ok(await main.invoke(`${runtimeIpcPrefix}profiles`)) as { id: string }[]
     expect(profiles.some((profile) => profile.id === fakeProfileId)).toBe(true)
+    desktop.close()
+  })
+
+  it('reports each profile\'s credential presence as names, never values', async () => {
+    const repoRoot = gitRepository('desktop-credentials')
+    const desktop = startDesktopHost({
+      repoRoot,
+      hostEnv: { ANTHROPIC_API_KEY: 'sk-ant-test-value-that-must-never-cross-ipc', PATH: 'C:\\bin' },
+    })
+    const main = new IpcMainRecorder()
+    desktop.registerIpc(main)
+
+    const profiles = ok(await main.invoke(`${runtimeIpcPrefix}profiles`)) as Array<{
+      id: string
+      onPath?: boolean
+      credentials?: { present: string[]; missing: string[] }
+    }>
+    const claude = profiles.find((profile) => profile.id === 'claude')
+    // Presence comes from the same host env the launch would inherit, so the
+    // badge an operator sees and the launch itself cannot disagree.
+    expect(claude?.credentials?.present).toEqual(['ANTHROPIC_API_KEY'])
+    // The fake profile simulates its process, so it needs no executable; every
+    // real profile reports the PATH truth for this host.
+    const fake = profiles.find((profile) => profile.id === fakeProfileId)
+    expect(fake?.onPath).toBe(true)
+    expect(profiles.every((profile) => typeof profile.onPath === 'boolean')).toBe(true)
+    // A real key shape crossing the bridge would be a disclosure, not a report.
+    expect(JSON.stringify(profiles)).not.toContain('sk-ant-test-value')
     desktop.close()
   })
 
@@ -232,6 +264,127 @@ describe('preload bridge', () => {
 
     const missing = await main.invoke('hive:work:item', { workItemId: 'no-such-task' })
     expect(failure(missing).code).toBe('WORK_ITEM_NOT_FOUND')
+    desktop.close()
+  })
+})
+
+describe('runtime view model over the preload bridge', () => {
+  /**
+   * The renderer's own code path. The smoke test bypasses it by invoking the
+   * bridge directly, which is how a doubled channel — the view model prefixing
+   * an operation the preload prefixes again, giving
+   * `hive:runtime:hive:runtime:runs` — reached the UI as UNKNOWN_CHANNEL. This
+   * asserts the channels that actually reach the main process.
+   */
+  it('reads through bare operation names, never a doubled channel', async () => {
+    const repoRoot = gitRepository('desktop-view-model')
+    const desktop = startDesktopHost({ repoRoot, hostEnv: {} })
+    const main = new IpcMainRecorder()
+    desktop.registerIpc(main)
+    const ipc = new IpcRendererRecorder()
+    ipc.main = main
+    main.renderer = ipc
+    const hive = createHiveWindow(ipc)
+
+    const view = new RuntimeViewModel({ bridge: hive.runtime })
+    await view.refresh()
+
+    expect(ipc.invocations.map((invocation) => invocation.channel)).toEqual([
+      `${runtimeIpcPrefix}profiles`,
+      `${runtimeIpcPrefix}runs`,
+    ])
+    const state = view.state()
+    expect(state.error).toBeUndefined()
+    expect(state.profiles.some((profile) => profile.id === fakeProfileId)).toBe(true)
+    view.dispose()
+    desktop.close()
+  })
+})
+
+describe('Phase 8 control plane over the desktop', () => {
+  const definition = {
+    id: 'pr-review', version: '1.0.0', name: 'PR review', description: 'review', enabled: true,
+    steps: [{ id: 'review', type: 'create_work', title: 'Review the change' }],
+  }
+
+  /**
+   * §7 Phase 8's exit gate asks for CLI/MCP/desktop state to be consistent. This
+   * drives the desktop's own channels and then reads the same ledger through a
+   * separate service — which is what the CLI is — so the two cannot be two truths.
+   */
+  it('serves workflows, runs, triggers, schedules, skills, metrics, and policy', async () => {
+    const repoRoot = gitRepository('desktop-control')
+    const desktop = startDesktopHost({ repoRoot, hostEnv: {}, triggers: { admission: { allowedKinds: ['manual'] } } })
+    const main = new IpcMainRecorder()
+    desktop.registerIpc(main)
+
+    expect((ok(await main.invoke('hive:control:register', { definition })) as { id: string }).id).toBe('pr-review')
+    const admitted = ok(await main.invoke('hive:control:trigger', { id: 'manual:1', workflowId: 'pr-review' })) as { duplicate: boolean; run: { state: string } }
+    expect(admitted.duplicate).toBe(false)
+    expect(admitted.run.state).toBe('completed')
+
+    expect(ok(await main.invoke('hive:control:workflows')) as unknown[]).toHaveLength(1)
+    expect(ok(await main.invoke('hive:control:runs')) as unknown[]).toHaveLength(1)
+    expect(ok(await main.invoke('hive:control:triggers')) as unknown[]).toHaveLength(1)
+    expect(ok(await main.invoke('hive:control:schedules')) as unknown[]).toEqual([])
+    expect(ok(await main.invoke('hive:control:skills')) as unknown[]).toEqual([])
+    expect(ok(await main.invoke('hive:control:metrics')) as unknown[]).toEqual([])
+    expect(ok(await main.invoke('hive:control:admission'))).toMatchObject({ policy: { allowedKinds: ['manual'] } })
+
+    // The gate the CLI enforces is the one the desktop enforces: a GitHub-kind
+    // trigger is refused here for the same reason it would be there.
+    const refused = await main.invoke('hive:control:trigger', { id: 'github:1', workflowId: 'pr-review', kind: 'github' })
+    expect(failure(refused).code).toBe('TRIGGER_REFUSED')
+    expect(ok(await main.invoke('hive:control:runs')) as unknown[]).toHaveLength(1)
+    desktop.close()
+  })
+
+  it('carries an operator pause from the desktop to the CLI, and back', async () => {
+    const repoRoot = gitRepository('desktop-control-pause')
+    const ledgerFile = join(tempDirectory('desktop-control-pause-ledger'), 'hive.db')
+    const desktop = startDesktopHost({ repoRoot, ledgerFile, hostEnv: {} })
+    const main = new IpcMainRecorder()
+    desktop.registerIpc(main)
+
+    await main.invoke('hive:control:register', { definition })
+    expect(ok(await main.invoke('hive:control:pause'))).toMatchObject({ policy: { paused: true } })
+
+    // Read the same ledger the way the CLI does: a separate service over the file.
+    const cliLedger = new Ledger(ledgerFile)
+    const cli = new WorkflowService({ ledger: cliLedger, board: new WorkBoard(cliLedger) })
+    expect(cli.admissionPolicy().paused).toBe(true)
+    expect(() => cli.trigger(desktop.actor, desktop.workScope, { id: 'cli-after-pause', kind: 'manual', workflowId: 'pr-review' }))
+      .toThrowError(/paused/)
+
+    // And the reverse: a resume over the CLI's own path reopens the desktop.
+    cli.setPaused(desktop.actor, desktop.workScope, false)
+    expect((ok(await main.invoke('hive:control:admission')) as { policy: { paused?: boolean } }).policy.paused).toBe(false)
+    expect((ok(await main.invoke('hive:control:trigger', { id: 'desktop-after-resume', workflowId: 'pr-review' })) as { duplicate: boolean }).duplicate).toBe(false)
+
+    cliLedger.close()
+    desktop.close()
+  })
+
+  it('serves watches, queues, voice, and version over the control channels', async () => {
+    const repoRoot = gitRepository('desktop-control-extended')
+    const desktop = startDesktopHost({ repoRoot, hostEnv: {} })
+    const main = new IpcMainRecorder()
+    desktop.registerIpc(main)
+
+    expect(ok(await main.invoke('hive:control:register', { definition }))).toMatchObject({ id: 'pr-review' })
+    expect(ok(await main.invoke('hive:control:watch', { id: 'context-watch', workflowId: 'pr-review', uriPrefix: 'viking://workspace/main/project/hive/memory/' }))).toMatchObject({ id: 'context-watch' })
+    expect(ok(await main.invoke('hive:control:watches')) as unknown[]).toHaveLength(1)
+    expect(ok(await main.invoke('hive:control:queues')) as unknown[]).toContainEqual(expect.objectContaining({ queue: 'supervisor' }))
+    expect((ok(await main.invoke('hive:control:version')) as { version: string }).version).toMatch(/^\d+\.\d+\.\d+$/)
+
+    // The voice operator is assembled by the host itself, and answers through the
+    // same capability checks every other channel applies.
+    const vocabulary = ok(await main.invoke('hive:control:voice', {})) as { vocabulary: unknown[] }
+    expect(vocabulary.vocabulary.length).toBeGreaterThan(0)
+    const turn = ok(await main.invoke('hive:control:voice', { utterance: 'status' })) as { outcome: { kind: string } }
+    expect(turn.outcome.kind).toBe('answered')
+    const refused = ok(await main.invoke('hive:control:voice', { utterance: 'make me a sandwich' })) as { outcome: { kind: string; reason?: string } }
+    expect(refused.outcome).toMatchObject({ kind: 'refused', reason: 'unrecognized' })
     desktop.close()
   })
 })
